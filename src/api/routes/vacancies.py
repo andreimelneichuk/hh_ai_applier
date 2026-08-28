@@ -91,14 +91,7 @@ def get_jobs(status: str = "all", limit: int = 50, offset: int = 0):
             "processed_at": r[10] if len(r) > 10 else (r[8] if len(r) > 8 else "")
         })
         
-    stats = {
-        "total": database.get_processed_count("all"),
-        "matched": database.get_processed_count("matched"),
-        "needs_answers": database.get_processed_count("needs_answers"),
-        "applied": database.get_processed_count("applied"),
-        "ignored": database.get_processed_count("ignored"),
-        "failed": database.get_processed_count("failed")
-    }
+    stats = database.get_all_counts()
     
     return {"jobs": jobs, "stats": stats}
 

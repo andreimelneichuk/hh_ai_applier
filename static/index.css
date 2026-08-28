@@ -7,20 +7,20 @@
     /* Liquid Glass Base Palette */
     --bg-dark: #07090e;
     --bg-dark-secondary: #0c1019;
-    --panel-bg: rgba(15, 23, 42, 0.52);
-    --panel-bg-hover: rgba(22, 32, 56, 0.65);
-    --panel-bg-subtle: rgba(255, 255, 255, 0.035);
-    --panel-bg-elevated: rgba(18, 26, 47, 0.78);
+    --panel-bg: rgba(15, 23, 42, 0.72);
+    --panel-bg-hover: rgba(22, 32, 56, 0.82);
+    --panel-bg-subtle: rgba(255, 255, 255, 0.04);
+    --panel-bg-elevated: rgba(18, 26, 47, 0.88);
     
     /* Glass Specular and Border Tokens */
     --glass-border: rgba(255, 255, 255, 0.12);
     --glass-border-light: rgba(255, 255, 255, 0.22);
     --glass-border-focus: rgba(99, 102, 241, 0.55);
-    --glass-specular-top: inset 0 1px 1px 0 rgba(255, 255, 255, 0.25);
-    --glass-specular-bevel: inset 0 1px 0 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 0 rgba(0, 0, 0, 0.35);
-    --glass-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.07);
-    --glass-shadow-lg: 0 25px 60px -15px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.1);
-    --glass-blur: blur(28px) saturate(210%) contrast(105%);
+    --glass-specular-top: inset 0 1px 1px 0 rgba(255, 255, 255, 0.22);
+    --glass-specular-bevel: inset 0 1px 0 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 0 rgba(0, 0, 0, 0.35);
+    --glass-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --glass-shadow-lg: 0 20px 50px -12px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.1);
+    --glass-blur: blur(14px) saturate(160%);
     
     /* Typography Colors */
     --text-primary: #f8fafc;
@@ -127,57 +127,36 @@ body {
 .glow-orb {
     position: fixed;
     border-radius: 50%;
-    filter: blur(140px);
-    opacity: 0.22;
+    opacity: 0.18;
     z-index: -2;
     pointer-events: none;
-    will-change: transform;
+    transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
 }
 
 #orb-1 {
-    width: 500px;
-    height: 500px;
-    background: radial-gradient(circle, var(--primary-color) 0%, rgba(99, 102, 241, 0) 70%);
-    top: 10%;
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, rgba(99, 102, 241, 0.35) 0%, rgba(99, 102, 241, 0) 70%);
+    top: -100px;
     left: -120px;
-    animation: liquidFloat1 18s infinite alternate var(--ease-spring);
 }
 
 #orb-2 {
-    width: 480px;
-    height: 480px;
-    background: radial-gradient(circle, var(--accent-purple) 0%, rgba(168, 85, 247, 0) 70%);
-    bottom: 5%;
+    width: 550px;
+    height: 550px;
+    background: radial-gradient(circle, rgba(168, 85, 247, 0.3) 0%, rgba(168, 85, 247, 0) 70%);
+    bottom: -100px;
     right: -100px;
-    animation: liquidFloat2 22s infinite alternate-reverse var(--ease-spring);
 }
 
 #orb-3 {
-    width: 420px;
-    height: 420px;
-    background: radial-gradient(circle, var(--accent-blue) 0%, rgba(56, 189, 248, 0) 70%);
-    top: 50%;
-    left: 45%;
+    width: 480px;
+    height: 480px;
+    background: radial-gradient(circle, rgba(56, 189, 248, 0.25) 0%, rgba(56, 189, 248, 0) 70%);
+    top: 40%;
+    left: 40%;
     transform: translate(-50%, -50%);
-    opacity: 0.15;
-    animation: liquidFloat3 26s infinite alternate var(--ease-spring);
-}
-
-@keyframes liquidFloat1 {
-    0% { transform: scale(1) translate(0, 0); }
-    50% { transform: scale(1.15) translate(80px, 40px); }
-    100% { transform: scale(0.95) translate(40px, 90px); }
-}
-
-@keyframes liquidFloat2 {
-    0% { transform: scale(1) translate(0, 0); }
-    50% { transform: scale(1.2) translate(-90px, -50px); }
-    100% { transform: scale(0.9) translate(-40px, 30px); }
-}
-
-@keyframes liquidFloat3 {
-    0% { transform: translate(-50%, -50%) scale(0.9); }
-    100% { transform: translate(-40%, -60%) scale(1.25); }
 }
 
 /* ==========================================================================
@@ -662,7 +641,7 @@ input[type="range"]::-webkit-slider-thumb:active {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    transition: all var(--transition-fast);
+    transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     cursor: pointer;
     user-select: none;
     position: relative;
@@ -670,6 +649,8 @@ input[type="range"]::-webkit-slider-thumb:active {
     background: rgba(18, 26, 47, 0.45);
     border: 1px solid rgba(255, 255, 255, 0.08);
     overflow: hidden;
+    contain: content;
+    transform: translateZ(0);
 }
 
 .stat-card::after {
@@ -878,10 +859,12 @@ input[type="range"]::-webkit-slider-thumb:active {
     min-height: 68px;
     box-sizing: border-box;
     flex-shrink: 0;
-    transition: all var(--transition-fast);
+    transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     cursor: pointer;
     position: relative;
     overflow: hidden;
+    contain: content;
+    transform: translateZ(0);
 }
 
 .vacancy-card::before {

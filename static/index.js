@@ -57,7 +57,7 @@ async function initApp() {
     statusInterval = setInterval(async () => {
         await checkStatus();
         if (!isPolling) {
-            await loadJobs(false, false);
+            await loadJobs(false, false, true);
         }
     }, 10000);
 }
@@ -956,7 +956,7 @@ async function pollScanStatus() {
         if (window.lastProcessingId !== currentId || !window.lastJobsPolledTime || (Date.now() - window.lastJobsPolledTime) > 3000) {
             window.lastProcessingId = currentId;
             window.lastJobsPolledTime = Date.now();
-            await loadJobs(false, false);
+            await loadJobs(false, false, true);
         }
         
         // Обновляем плашку текущей обработки
@@ -993,8 +993,22 @@ async function pollScanStatus() {
 
 let currentFetchId = 0;
 
+function hasJobsChanged(oldList, newList, append) {
+    if (append) return true;
+    if (!oldList || !newList) return true;
+    if (oldList.length !== newList.length) return true;
+    for (let i = 0; i < newList.length; i++) {
+        if (oldList[i]?.id !== newList[i]?.id || 
+            oldList[i]?.status !== newList[i]?.status || 
+            oldList[i]?.match_score !== newList[i]?.match_score) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Загрузка обработанных вакансий из БД (с пагинацией и защитой от race conditions)
-async function loadJobs(reset = false, append = false) {
+async function loadJobs(reset = false, append = false, isSilent = false) {
     if (reset) {
         currentOffset = 0;
         currentJobs = [];
@@ -1005,10 +1019,12 @@ async function loadJobs(reset = false, append = false) {
     const requestedOffset = currentOffset;
     
     try {
-        setStatsLoading(true);
+        if (!isSilent && !append) {
+            setStatsLoading(true);
+        }
         const response = await fetch(`/api/jobs?status=${requestedFilter}&limit=${itemsPerPage}&offset=${requestedOffset}`);
         if (!response.ok) {
-            if (fetchId === currentFetchId) {
+            if (fetchId === currentFetchId && !isSilent) {
                 setStatsLoading(false);
             }
             return;
@@ -1021,6 +1037,7 @@ async function loadJobs(reset = false, append = false) {
         }
         
         const newJobs = data.jobs || [];
+        const changed = hasJobsChanged(currentJobs, newJobs, append);
         
         if (append) {
             currentJobs = [...currentJobs, ...newJobs];
@@ -1034,9 +1051,14 @@ async function loadJobs(reset = false, append = false) {
             localStorage.setItem("cached_stats", JSON.stringify(data.stats));
         }
         
-        setStatsLoading(false);
+        if (!isSilent) {
+            setStatsLoading(false);
+        }
         renderStatsDom(data.stats);
-        renderJobsList(append);
+        
+        if (changed || reset) {
+            renderJobsList(append);
+        }
         
         // Управляем кнопкой "Переоценить все ошибки"
         const reanalyzeAllBtn = document.getElementById("reanalyze-all-failed-btn");
@@ -1059,7 +1081,7 @@ async function loadJobs(reset = false, append = false) {
         }
     } catch (e) {
         console.error("Error loading jobs:", e);
-        if (fetchId === currentFetchId) {
+        if (fetchId === currentFetchId && !isSilent) {
             setStatsLoading(false);
         }
     }
@@ -1258,6 +1280,7 @@ function renderJobsList(append = false) {
     });
     
     // Рендерим только те группы, где есть хотя бы одна вакансия
+    const fragment = document.createDocumentFragment();
     TIME_GROUPS.forEach(g => {
         const jobsInGroup = grouped[g.id];
         if (!jobsInGroup || jobsInGroup.length === 0) return;
@@ -1270,7 +1293,7 @@ function renderJobsList(append = false) {
             <span class="timeline-badge">${jobsInGroup.length}</span>
             <div class="timeline-divider"></div>
         `;
-        container.appendChild(header);
+        fragment.appendChild(header);
         
         // Рендерим карточки группы
         jobsInGroup.forEach(job => {
@@ -1315,9 +1338,10 @@ function renderJobsList(append = false) {
             `;
             
             card.addEventListener("click", () => openModal(job));
-            container.appendChild(card);
+            fragment.appendChild(card);
         });
     });
+    container.appendChild(fragment);
 }
 
 function getFilterLabel(filter) {
@@ -2390,23 +2414,18 @@ window.handleQuickApply = handleQuickApply;
  * Liquid Glass Dynamic Specular Highlights & Pointer Morphology
  */
 function initLiquidGlassInteractivity() {
-    let ticking = false;
-    document.addEventListener("mousemove", (e) => {
-        if (!ticking) {
-            window.requestAnimationFrame(() => {
-                const target = (e.target && typeof e.target.closest === "function") 
-                    ? e.target.closest(".stat-card, .vacancy-card, .btn-primary, .modal-content, .auth-box") 
-                    : null;
-                if (target) {
-                    const rect = target.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
-                    const y = e.clientY - rect.top;
-                    target.style.setProperty("--mouse-x", `${x}px`);
-                    target.style.setProperty("--mouse-y", `${y}px`);
-                }
-                ticking = false;
-            });
-            ticking = true;
+    let lastMove = 0;
+    document.addEventListener("pointermove", (e) => {
+        const now = performance.now();
+        if (now - lastMove < 32) return; // ~30fps throttle is visually seamless & zero CPU load
+        lastMove = now;
+        
+        const target = (e.target && typeof e.target.closest === "function") 
+            ? e.target.closest(".stat-card, .btn-primary, .modal-content, .auth-box") 
+            : null;
+        if (target) {
+            target.style.setProperty("--mouse-x", `${e.offsetX}px`);
+            target.style.setProperty("--mouse-y", `${e.offsetY}px`);
         }
     }, { passive: true });
 }

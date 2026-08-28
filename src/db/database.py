@@ -307,6 +307,33 @@ def get_processed_count(status: Optional[str] = None):
     conn.close()
     return count
 
+def get_all_counts() -> dict:
+    """Возвращает все счетчики одним быстрым агрегирующим запросом."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            COUNT(*),
+            SUM(CASE WHEN status IN ('new', 'needs_answers', 'applied', 'already_applied') THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'needs_answers' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status IN ('applied', 'already_applied') THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+        FROM processed_vacancies
+    """)
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return {"total": 0, "matched": 0, "needs_answers": 0, "applied": 0, "ignored": 0, "failed": 0}
+    return {
+        "total": row[0] or 0,
+        "matched": row[1] or 0,
+        "needs_answers": row[2] or 0,
+        "applied": row[3] or 0,
+        "ignored": row[4] or 0,
+        "failed": row[5] or 0
+    }
+
 def get_user_profile_answers() -> list:
     """Возвращает список всех сохраненных профильных ответов."""
     conn = sqlite3.connect(DB_PATH)
