@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import app
-import database
-import config
+from src.api.app import app
+import src.db.database as database
+from src.core.config import Config
 
 TEST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_frontend_api_db.db")
 

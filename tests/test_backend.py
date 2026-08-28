@@ -194,7 +194,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def test_06_mistral_direct_and_fallback(self):
         """Тестирование прямого вызова Mistral и fallback при исчерпании Gemini."""
-        from llm_analyzer import LLMAnalyzer, QuotaExceededError
+        from src.clients.llm import LLMAnalyzer, QuotaExceededError
         import requests
 
         analyzer = LLMAnalyzer(
@@ -239,7 +239,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def test_08_mistral_only_mode(self):
         """Тестирование работы анализатора, когда настроен только Mistral."""
-        from llm_analyzer import LLMAnalyzer
+        from src.clients.llm import LLMAnalyzer
         import requests
 
         database.set_system_setting("primary_provider", "mistral")
@@ -271,7 +271,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def test_09_mistral_key_rotation_on_429(self):
         """Тестирование ротации ключей Mistral при ошибке 429."""
-        from llm_analyzer import LLMAnalyzer
+        from src.clients.llm import LLMAnalyzer
         import requests
 
         database.set_system_setting("primary_provider", "mistral")
@@ -328,7 +328,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def test_11_custom_prompt_variable_substitution(self):
         """Тестирование подстановки переменных в кастомный системный промпт."""
-        from llm_analyzer import LLMAnalyzer
+        from src.clients.llm import LLMAnalyzer
 
         custom_prompt = "Оцени {resume_text} для {vacancy_title} в {company}, навыки: {skills}, порог {threshold}"
         database.set_system_setting("system_prompt", custom_prompt)
@@ -359,7 +359,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def test_13_primary_provider_mistral_priority(self):
         """Тестирование приоритета провайдера: когда Mistral выбран основным, он вызывается первым."""
-        from llm_analyzer import LLMAnalyzer
+        from src.clients.llm import LLMAnalyzer
         import requests
 
         database.set_system_setting("primary_provider", "mistral")
@@ -398,7 +398,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def test_14_multi_resume_llm_selection(self):
         """Тестирование автоматического выбора лучшего резюме через LLM из списка."""
-        from llm_analyzer import LLMAnalyzer
+        from src.clients.llm import LLMAnalyzer
         import requests
 
         analyzer = LLMAnalyzer(
