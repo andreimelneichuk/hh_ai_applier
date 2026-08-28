@@ -36,7 +36,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install Pillow pyinstaller pywebview
+          pip install Pillow pyinstaller pywebview pythonnet
 
       - name: Generate Application Icons
         run: |
