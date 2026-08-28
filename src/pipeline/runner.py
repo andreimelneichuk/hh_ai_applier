@@ -3,18 +3,25 @@ import sys
 import logging
 from typing import List, Dict, Any
 from src.core.config import Config
+from src.core.paths import get_app_data_dir, get_bundle_dir
 from src.db import database
 from src.clients.browser import HHBrowserClient
 from src.clients.llm import LLMAnalyzer
 
 # Настройка логирования
+log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    log_dir = get_app_data_dir()
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "applier.log")
+    log_handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "applier.log"), encoding='utf-8')
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger("MainPipeline")
 
@@ -24,14 +31,13 @@ RESUME_ALT_FILENAME = "optimized_resume.md"
 
 def load_resume_text() -> str:
     """Загружает текст резюме из локального файла в случае отсутствия токена или ошибки API."""
-    from src.core.paths import get_app_data_dir, get_bundle_dir
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    bundle_dir = get_bundle_dir()
     app_data_dir = get_app_data_dir()
     cwd_dir = os.getcwd()
     
     local_paths = [
-        os.path.join(base_dir, RESUME_FILENAME),
-        os.path.join(base_dir, RESUME_ALT_FILENAME),
+        os.path.join(bundle_dir, RESUME_FILENAME),
+        os.path.join(bundle_dir, RESUME_ALT_FILENAME),
         os.path.join(app_data_dir, RESUME_FILENAME),
         os.path.join(app_data_dir, RESUME_ALT_FILENAME),
         os.path.join(cwd_dir, RESUME_FILENAME),

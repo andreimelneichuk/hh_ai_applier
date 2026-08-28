@@ -17,7 +17,7 @@ rm -rf build dist
 
 # Сборка приложения через PyInstaller
 echo "Компиляция через PyInstaller..."
-pyinstaller hh_applier.spec --noconfirm
+PYINSTALLER_CONFIG_DIR="$(pwd)/build/pyi_cache" pyinstaller hh_applier.spec --noconfirm
 
 echo ""
 echo "==============================================="
