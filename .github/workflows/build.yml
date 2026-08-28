@@ -1,0 +1,69 @@
+name: Build Desktop App (Windows & macOS)
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            artifact_name: HH_AI_Applier_Windows
+            output_path: dist/HH_AI_Applier
+          - os: macos-latest
+            platform: macos
+            artifact_name: HH_AI_Applier_macOS
+            output_path: dist/HH_AI_Applier.app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install Pillow pyinstaller pywebview
+
+      - name: Generate Application Icons
+        run: |
+          python generate_icon.py
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller hh_applier.spec --clean --noconfirm
+
+      - name: Zip Artifact (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path dist\HH_AI_Applier -DestinationPath HH_AI_Applier_Windows.zip
+
+      - name: Zip Artifact (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist && zip -r ../HH_AI_Applier_macOS.zip HH_AI_Applier.app
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: '*.zip'
+
+      - name: Release Assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.zip'

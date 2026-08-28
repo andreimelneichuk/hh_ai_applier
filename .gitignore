@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Environment and sensitive data
+.env
+*.env
+!*.env.example
+
+# Local Database & Sessions
+jobs.db
+*.db
+*.db-journal
+playwright_session/
+
+# Logs
+*.log
+applier.log
+
+# Build & Dist
+build/
+dist/
+*.spec.bak
+*.zip
+
+# Test HTML and screenshots
+*.html
+*.png
+!static/*.html
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Testing
+.vscode/
+.idea/
+.pytest_cache/
+.deepeval/
