@@ -1,7 +1,21 @@
 import os
+import sys
 import math
 import subprocess
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+# Обеспечиваем корректный вывод UTF-8 в консоль на любой ОС (включая Windows CI)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def create_app_icon():
     size = 1024
@@ -131,13 +145,21 @@ def create_app_icon():
     d_draw.rounded_rectangle([tag_x1, tag_y1, tag_x1 + tag_w, tag_y1 + tag_h], radius=16, fill=(15, 23, 42, 230), outline=(56, 189, 248, 200), width=3)
     
     # Добавляем стилизованный текст HH AI
-    try:
-        font_large = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 36)
-    except Exception:
+    font_large = None
+    for font_path in [
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]:
         try:
-            font_large = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 36)
+            if os.path.exists(font_path):
+                font_large = ImageFont.truetype(font_path, 36)
+                break
         except Exception:
-            font_large = ImageFont.load_default()
+            continue
+    if font_large is None:
+        font_large = ImageFont.load_default()
 
     d_draw.text((center_x, tag_y1 + tag_h // 2), "HH • AI", fill=(255, 255, 255, 255), font=font_large, anchor="mm")
 
@@ -150,7 +172,7 @@ def create_app_icon():
     png_path = "assets/icon.png"
     icon_base.save(png_path, "PNG")
     icon_base.save("static/icon.png", "PNG")
-    print(f"✓ PNG иконка создана: {png_path}")
+    print(f"[OK] PNG icon created: {png_path}")
 
     # 6. Сохранение .ico для Windows (мульти-разрешение)
     ico_sizes = [(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)]
@@ -158,7 +180,7 @@ def create_app_icon():
     ico_path = "assets/icon.ico"
     ico_images[0].save(ico_path, format="ICO", sizes=ico_sizes)
     ico_images[0].save("static/favicon.ico", format="ICO", sizes=ico_sizes)
-    print(f"✓ ICO иконка создана: {ico_path}")
+    print(f"[OK] ICO icon created: {ico_path}")
 
     # 7. Генерация .icns для macOS через sips + iconutil
     try:
@@ -182,12 +204,12 @@ def create_app_icon():
             resized.save(os.path.join(iconset_dir, name))
 
         subprocess.run(["iconutil", "-c", "icns", iconset_dir, "-o", "assets/icon.icns"], check=True)
-        print("✓ ICNS иконка для macOS создана: assets/icon.icns")
+        print("[OK] ICNS icon for macOS created: assets/icon.icns")
         # Удаляем временную папку iconset
         import shutil
         shutil.rmtree(iconset_dir, ignore_errors=True)
     except Exception as e:
-        print(f"Примечание: iconutil не сработал ({e}), используется PNG")
+        print(f"[INFO] iconutil skipped ({e}), using PNG")
 
 if __name__ == "__main__":
     create_app_icon()

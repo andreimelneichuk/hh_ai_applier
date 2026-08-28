@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import database
-from app import app
-from llm_analyzer import LLMAnalyzer, QuestionAnswer, QuestionsAnalysisResult, VacancyAnalysis
-from hh_browser_client import HHBrowserClient
+import src.db.database as database
+from src.api.app import app
+from src.clients.browser import HHBrowserClient
+from src.clients.llm import LLMAnalyzer, QuestionAnswer, QuestionsAnalysisResult, VacancyAnalysis
 
 TEST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_questions_db.db")
 os.environ["HH_DB_PATH"] = TEST_DB_PATH
@@ -40,6 +40,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
 
     def setUp(self):
         database.DB_PATH = TEST_DB_PATH
+        database.init_db()
         conn = sqlite3.connect(TEST_DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM processed_vacancies")
@@ -282,8 +283,8 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
             cover_letter="Добрый день! Готов присоединиться к команде."
         )
 
-        with patch("app.HHBrowserClient", return_value=mock_hh), \
-             patch("main.load_resume_text", return_value="Senior Python Developer, 6 лет"), \
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Senior Python Developer, 6 лет"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis), \
              patch.object(LLMAnalyzer, "answer_questions", return_value=mock_q_res):
             
@@ -335,8 +336,8 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         mock_hh.get_resume.return_value = None
         mock_hh.get_vacancy_questions.return_value = mock_questions
 
-        with patch("app.HHBrowserClient", return_value=mock_hh), \
-             patch("main.load_resume_text", return_value="Python Developer"), \
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Python Developer"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis), \
              patch.object(LLMAnalyzer, "answer_questions", return_value=mock_q_res):
             

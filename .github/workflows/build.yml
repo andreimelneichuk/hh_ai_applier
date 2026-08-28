@@ -11,6 +11,9 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
     strategy:
       matrix:
         include:
@@ -40,7 +43,7 @@ jobs:
 
       - name: Generate Application Icons
         run: |
-          python generate_icon.py
+          python scripts/generate_icon.py
 
       - name: Build with PyInstaller
         run: |

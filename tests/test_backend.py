@@ -6,11 +6,11 @@ import sqlite3
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
-import database
-from app import app
-import main
-from hh_browser_client import HHBrowserClient
-from llm_analyzer import LLMAnalyzer, VacancyAnalysis
+import src.db.database as database
+from src.api.app import app
+import src.pipeline.runner as main
+from src.clients.browser import HHBrowserClient
+from src.clients.llm import LLMAnalyzer, VacancyAnalysis
 
 # Используем унікальную тестовую БД для backend тестов
 TEST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_backend_db.db")
@@ -40,6 +40,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
 
     def setUp(self):
         database.DB_PATH = TEST_DB_PATH
+        database.init_db()
         # Очищаем таблицы перед каждым тестом
         conn = sqlite3.connect(TEST_DB_PATH)
         cursor = conn.cursor()
@@ -142,8 +143,8 @@ class TestHHApplierComprehensive(unittest.TestCase):
         mock_hh_client.get_resume.return_value = None
         mock_hh_client.get_vacancy_questions.return_value = []
 
-        with patch("app.HHBrowserClient", return_value=mock_hh_client), \
-             patch("main.load_resume_text", return_value="Senior Python Engineer"), \
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh_client), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Senior Python Engineer"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis):
             
             # Запускаем переоценку одной вакансии
@@ -241,6 +242,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
         from llm_analyzer import LLMAnalyzer
         import requests
 
+        database.set_system_setting("primary_provider", "mistral")
         analyzer = LLMAnalyzer(
             gemini_api_keys=[],
             mistral_api_keys=["mistral_key_single"]
@@ -272,6 +274,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
         from llm_analyzer import LLMAnalyzer
         import requests
 
+        database.set_system_setting("primary_provider", "mistral")
         analyzer = LLMAnalyzer(
             gemini_api_keys=[],
             mistral_api_keys=["mistral_key_1", "mistral_key_2"]

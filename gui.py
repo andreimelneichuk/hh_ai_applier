@@ -1,8 +1,7 @@
 """
-Десктопный запуск приложения HH.ru AI Job Applier.
+HH AI Applier - GUI Entrypoint
 """
-from desktop import main
+from src.desktop.launcher import main
 
 if __name__ == "__main__":
     main()
-
