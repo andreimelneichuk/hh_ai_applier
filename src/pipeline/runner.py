@@ -6,7 +6,7 @@ from src.core.config import Config
 from src.core.paths import get_app_data_dir, get_bundle_dir
 from src.db import database
 from src.clients.browser import HHBrowserClient
-from src.clients.llm import LLMAnalyzer
+from src.clients.llm import LLMAnalyzer, QuotaExceededError
 
 # Настройка логирования
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -319,7 +319,6 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                     continue
                     
                 # Анализируем вакансию через LLM со сравнением всех резюме кандидата
-                from llm_analyzer import QuotaExceededError
                 try:
                     analysis = analyzer.analyze_vacancy(
                         resumes=candidate_resumes,
