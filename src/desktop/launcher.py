@@ -76,20 +76,33 @@ def main():
 
     logger.info(f"Сервер готов: {server_url}. Открытие окна приложения...")
 
-    # Создаем нативное окно через pywebview
-    window = webview.create_window(
-        title="HH.ru AI Job Applier",
-        url=server_url,
-        width=1280,
-        height=850,
-        min_size=(1024, 700),
-        background_color="#0a0b10",
-        text_select=True
-    )
-
-    # Запуск GUI цикла окна
-    webview.start()
-    logger.info("Приложение закрыто пользователем.")
+    # Пытаемся запустить нативное окно через pywebview
+    # Если на Windows возникают проблемы с .NET / pythonnet / webview, делаем fallback в браузер
+    try:
+        window = webview.create_window(
+            title="HH.ru AI Job Applier",
+            url=server_url,
+            width=1280,
+            height=850,
+            min_size=(1024, 700),
+            background_color="#0a0b10",
+            text_select=True
+        )
+        webview.start()
+        logger.info("Приложение закрыто пользователем.")
+    except Exception as e:
+        logger.warning(f"Не удалось инициализировать окно pywebview ({e}). Запуск интерфейса в системном браузере...")
+        import webbrowser
+        webbrowser.open(server_url)
+        print("\n" + "="*60)
+        print(f" HH AI Applier запущен в браузере: {server_url}")
+        print(" Нажмите Ctrl+C в этом окне для завершения работы.")
+        print("="*60 + "\n")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Приложение остановлено.")
 
 if __name__ == "__main__":
     main()

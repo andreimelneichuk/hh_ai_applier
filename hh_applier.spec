@@ -2,6 +2,8 @@
 import sys
 import os
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 
 # Директория проекта
@@ -10,6 +12,7 @@ project_dir = os.path.abspath(os.getcwd())
 datas = [
     (os.path.join(project_dir, 'static'), 'static'),
 ]
+binaries = []
 
 # Добавляем .env или .env.example если существуют
 if os.path.exists(os.path.join(project_dir, '.env.example')):
@@ -64,16 +67,29 @@ hidden_imports = [
     'webview.platforms.cocoa',
     'webview.platforms.edgechromium',
     'webview.platforms.winforms',
+    'clr_loader',
+    'pythonnet',
+    'clr',
     'objc',
     'AppKit',
     'Foundation',
     'WebKit',
 ]
 
+# Автоматически собираем бинарники и ресурсы для webview, pythonnet, clr_loader
+for pkg in ['clr_loader', 'pythonnet', 'webview']:
+    try:
+        pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+        datas += pkg_datas
+        binaries += pkg_binaries
+        hidden_imports += pkg_hidden
+    except Exception:
+        pass
+
 a = Analysis(
     ['desktop.py'],
     pathex=[project_dir],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],

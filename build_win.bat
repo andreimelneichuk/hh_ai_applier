@@ -9,6 +9,9 @@ if exist venv (
     call venv\Scripts\activate.bat
 )
 
+echo Проверка и установка зависимостей...
+pip install -r requirements.txt
+
 echo Очистка каталогов сборки...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
