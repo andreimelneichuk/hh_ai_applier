@@ -73,6 +73,26 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
     title = resume_data.get('title', 'Специалист')
     parts.append(f"ФИО: {name}")
     parts.append(f"Желаемая должность: {title}")
+
+    total_exp = resume_data.get('total_experience')
+    if total_exp:
+        parts.append(f"Общий стаж работы: {total_exp}")
+        
+    location = resume_data.get('location') or resume_data.get('city')
+    if location:
+        parts.append(f"Город / Локация: {location}")
+        
+    relocation = resume_data.get('relocation')
+    if relocation:
+        parts.append(f"Переезд / Командировки: {relocation}")
+        
+    employment_pref = resume_data.get('employment') or resume_data.get('employment_preference')
+    if employment_pref:
+        parts.append(f"Предпочитаемая занятость: {employment_pref}")
+        
+    schedule_pref = resume_data.get('schedule') or resume_data.get('schedule_preference')
+    if schedule_pref:
+        parts.append(f"Предпочитаемый график: {schedule_pref}")
     
     # Обо мне
     skills_description = resume_data.get('skills', '')
@@ -92,9 +112,12 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
             company = exp.get('company', 'Не указано')
             position = exp.get('position', 'Не указано')
             description = exp.get('description', '')
+            period = exp.get('period', '')
             start = exp.get('start', '')
             end = exp.get('end', 'по настоящее время')
-            parts.append(f"- {position} в {company} ({start} - {end})")
+            date_info = period if period else (f"{start} - {end}" if start else "")
+            date_str = f" ({date_info})" if date_info else ""
+            parts.append(f"- {position} в {company}{date_str}")
             if description:
                 parts.append(f"  Обязанности:\n  {description}")
                 

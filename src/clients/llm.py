@@ -346,6 +346,11 @@ class LLMAnalyzer:
             "{salary}": str(vacancy.get('salary', 'Не указана') or 'Не указана'),
             "{skills}": skills_str,
             "{description}": str(vacancy.get('description', '')),
+            "{experience_required}": str(vacancy.get('experience', 'Не указан') or 'Не указан'),
+            "{experience}": str(vacancy.get('experience', 'Не указан') or 'Не указан'),
+            "{employment}": str(vacancy.get('employment', 'Не указана') or 'Не указана'),
+            "{schedule}": str(vacancy.get('schedule', 'Не указан') or 'Не указан'),
+            "{location}": str(vacancy.get('location', 'Не указана') or 'Не указана'),
             "{threshold}": str(match_threshold),
             "{match_threshold}": str(match_threshold)
         }
@@ -627,6 +632,14 @@ class LLMAnalyzer:
                     result.selected_resume_id = actual_resumes[0].get("id")
                     result.selected_resume_title = actual_resumes[0].get("title")
 
+        # Применение постфикса сопроводительного письма (если настроен)
+        postfix = database.get_system_setting("cover_letter_postfix") or ""
+        if postfix and postfix.strip() and result.is_match and result.cover_letter:
+            clean_letter = result.cover_letter.strip()
+            clean_postfix = postfix.strip()
+            if not clean_letter.endswith(clean_postfix):
+                result.cover_letter = f"{clean_letter}\n\n{clean_postfix}"
+
         return result
 
     def _mock_analysis(self, vacancy: Dict[str, Any], match_threshold: int, resumes: List[Dict[str, Any]] = None) -> VacancyAnalysis:
@@ -667,6 +680,12 @@ class LLMAnalyzer:
                 f"Буду рад обсудить подробности на интервью.\n\n"
                 f"С уважением,\nКандидат"
             )
+            postfix = database.get_system_setting("cover_letter_postfix") or ""
+            if postfix and postfix.strip():
+                clean_letter = cover_letter.strip()
+                clean_postfix = postfix.strip()
+                if not clean_letter.endswith(clean_postfix):
+                    cover_letter = f"{clean_letter}\n\n{clean_postfix}"
 
         return VacancyAnalysis(
             match_score=match_score,

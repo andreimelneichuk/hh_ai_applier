@@ -339,6 +339,46 @@ function setupEventListeners() {
         });
     }
 
+    // Переключение вкладок в модальном окне настроек LLM
+    const tabModelsBtn = document.getElementById("llm-tab-btn-models");
+    const tabPromptBtn = document.getElementById("llm-tab-btn-prompt");
+    const tabModelsContent = document.getElementById("llm-tab-content-models");
+    const tabPromptContent = document.getElementById("llm-tab-content-prompt");
+
+    function switchLlmTab(tab) {
+        if (tab === "prompt") {
+            if (tabPromptBtn) {
+                tabPromptBtn.classList.add("btn-primary");
+                tabPromptBtn.classList.remove("btn-secondary");
+            }
+            if (tabModelsBtn) {
+                tabModelsBtn.classList.remove("btn-primary");
+                tabModelsBtn.classList.add("btn-secondary");
+            }
+            if (tabPromptContent) tabPromptContent.style.display = "block";
+            if (tabModelsContent) tabModelsContent.style.display = "none";
+            if (promptEditor) setTimeout(() => promptEditor.focus(), 50);
+        } else {
+            if (tabModelsBtn) {
+                tabModelsBtn.classList.add("btn-primary");
+                tabModelsBtn.classList.remove("btn-secondary");
+            }
+            if (tabPromptBtn) {
+                tabPromptBtn.classList.remove("btn-primary");
+                tabPromptBtn.classList.add("btn-secondary");
+            }
+            if (tabModelsContent) tabModelsContent.style.display = "block";
+            if (tabPromptContent) tabPromptContent.style.display = "none";
+        }
+    }
+
+    if (tabModelsBtn) {
+        tabModelsBtn.addEventListener("click", () => switchLlmTab("models"));
+    }
+    if (tabPromptBtn) {
+        tabPromptBtn.addEventListener("click", () => switchLlmTab("prompt"));
+    }
+
     if (closeSystemSettingsBtn && systemSettingsModal) {
         closeSystemSettingsBtn.addEventListener("click", () => {
             systemSettingsModal.classList.add("hide");
@@ -2020,6 +2060,10 @@ async function openSystemSettings() {
             if (promptEditor) {
                 promptEditor.value = data.system_prompt || data.default_system_prompt || "";
             }
+            const postfixInput = document.getElementById("sys-cover-letter-postfix");
+            if (postfixInput) {
+                postfixInput.value = data.cover_letter_postfix || "";
+            }
             if (primaryProviderSelect) {
                 primaryProviderSelect.value = data.primary_provider || "gemini";
             }
@@ -2063,11 +2107,14 @@ async function saveSystemSettings() {
         const sysGeminiSelect = document.getElementById("sys-gemini-model-select");
         const sysMistralSelect = document.getElementById("sys-mistral-model-select");
 
+        const postfixInput = document.getElementById("sys-cover-letter-postfix");
+
         const selectedGeminiModel = sysGeminiSelect ? sysGeminiSelect.value : (userSettings.gemini_model || "gemini-3.6-flash");
         const selectedMistralModel = sysMistralSelect ? sysMistralSelect.value : (userSettings.mistral_model || "mistral-small-latest");
 
         const payload = {
             system_prompt: promptEditor ? promptEditor.value : "",
+            cover_letter_postfix: postfixInput ? postfixInput.value : "",
             primary_provider: primaryProviderSelect ? primaryProviderSelect.value : "gemini",
             fallback_enabled: fallbackToggle ? fallbackToggle.checked : true,
             temperature: tempSlider ? parseFloat(tempSlider.value) : 0.2,

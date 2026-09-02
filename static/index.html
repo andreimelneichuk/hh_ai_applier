@@ -90,7 +90,7 @@
                             <span>📋 База ответов (FAQ)</span>
                         </button>
                         <button type="button" class="btn btn-secondary" id="open-system-settings-sidebar-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
-                            <span>⚙️ Системные настройки LLM</span>
+                            <span>⚙️ Настройки LLM и промпта</span>
                         </button>
                     </div>
 
@@ -363,86 +363,98 @@
                 </button>
             </header>
 
-            <div class="modal-body" style="padding: 16px 0; overflow-y: auto; display: flex; flex-direction: column; gap: 20px;">
-                <!-- Секция 1: Модели, стратегия и ключи LLM -->
-                <div class="glass-panel" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); padding: 16px; border-radius: 10px; display: flex; flex-direction: column; gap: 14px;">
-                    <h4 style="margin: 0; font-size: 14px; color: white; display: flex; align-items: center; gap: 6px;">
-                        <span>⚡</span>
-                        <span>Модели по умолчанию и стратегия генерации</span>
-                    </h4>
-                    
-                    <!-- Выбор моделей Gemini и Mistral -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                        <div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                <label for="sys-gemini-model-select" style="margin: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary);">Модель Gemini (Основная)</label>
-                                <button type="button" id="sys-refresh-models-btn" style="background: transparent; border: none; color: var(--primary-color); font-size: 11px; cursor: pointer; text-decoration: underline;">Обновить</button>
-                            </div>
-                            <select id="sys-gemini-model-select" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
-                                <option value="gemini-3.6-flash">gemini-3.6-flash (Рекомендуемая, быстрая)</option>
-                                <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                                <option value="gemini-flash-latest">gemini-flash-latest</option>
-                                <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro - макс. интеллект)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label for="sys-mistral-model-select" style="margin-bottom: 6px; display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary);">Модель Mistral (Резервная)</label>
-                            <select id="sys-mistral-model-select" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
-                                <option value="mistral-small-latest">mistral-small-latest (Быстрая, рекомендуемая)</option>
-                                <option value="mistral-large-latest">mistral-large-latest (Максимальное качество)</option>
-                                <option value="open-mistral-nemo">open-mistral-nemo</option>
-                                <option value="codestral-latest">codestral-latest (Для кода и IT)</option>
-                            </select>
-                        </div>
-                    </div>
+            <!-- Вкладки настроек LLM -->
+            <div style="display: flex; gap: 8px; padding-top: 14px; border-bottom: 1px solid rgba(255,255,255,0.08);">
+                <button type="button" class="btn btn-primary" id="llm-tab-btn-models" style="font-size: 12px; padding: 7px 16px; border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 6px;">
+                    <span>⚡ Модели и параметры</span>
+                </button>
+                <button type="button" class="btn btn-secondary" id="llm-tab-btn-prompt" style="font-size: 12px; padding: 7px 16px; border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 6px;">
+                    <span>🎯 Промпт классификации</span>
+                </button>
+            </div>
 
-                    <!-- Провайдер и Температура -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                        <div>
-                            <label for="sys-primary-provider" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">Основной LLM провайдер</label>
-                            <select id="sys-primary-provider" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
-                                <option value="gemini">🔵 Gemini API (Основной, быстрый)</option>
-                                <option value="mistral">🟠 Mistral AI (Основной, европейский)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">
-                                Температура генерации: <span id="sys-temp-value" style="color: #60a5fa; font-weight: 700;">0.20</span>
-                            </label>
-                            <div style="display: flex; align-items: center; gap: 10px; height: 38px;">
-                                <input type="range" id="sys-temperature" min="0" max="1" step="0.05" value="0.2" style="flex: 1; accent-color: #3b82f6;">
+            <div class="modal-body" style="padding: 16px 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;">
+                <!-- Вкладка 1: Модели, стратегия и ключи LLM -->
+                <div id="llm-tab-content-models">
+                    <div class="glass-panel" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); padding: 16px; border-radius: 10px; display: flex; flex-direction: column; gap: 14px;">
+                        <h4 style="margin: 0; font-size: 14px; color: white; display: flex; align-items: center; gap: 6px;">
+                            <span>⚡</span>
+                            <span>Модели по умолчанию и стратегия генерации</span>
+                        </h4>
+                        
+                        <!-- Выбор моделей Gemini и Mistral -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <label for="sys-gemini-model-select" style="margin: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary);">Модель Gemini (Основная)</label>
+                                    <button type="button" id="sys-refresh-models-btn" style="background: transparent; border: none; color: var(--primary-color); font-size: 11px; cursor: pointer; text-decoration: underline;">Обновить</button>
+                                </div>
+                                <select id="sys-gemini-model-select" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                                    <option value="gemini-3.6-flash">gemini-3.6-flash (Рекомендуемая, быстрая)</option>
+                                    <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                                    <option value="gemini-flash-latest">gemini-flash-latest</option>
+                                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro - макс. интеллект)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="sys-mistral-model-select" style="margin-bottom: 6px; display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary);">Модель Mistral (Резервная)</label>
+                                <select id="sys-mistral-model-select" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                                    <option value="mistral-small-latest">mistral-small-latest (Быстрая, рекомендуемая)</option>
+                                    <option value="mistral-large-latest">mistral-large-latest (Максимальное качество)</option>
+                                    <option value="open-mistral-nemo">open-mistral-nemo</option>
+                                    <option value="codestral-latest">codestral-latest (Для кода и IT)</option>
+                                </select>
                             </div>
                         </div>
-                    </div>
 
-                    <!-- Fallback -->
-                    <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);">
-                        <div>
-                            <div style="font-size: 13px; font-weight: 600; color: white;">Автоматический Fallback</div>
-                            <div style="font-size: 11px; color: var(--text-secondary);">При ошибках 429/исчерпании квоты основного провайдера переключаться на резервный</div>
+                        <!-- Провайдер и Температура -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div>
+                                <label for="sys-primary-provider" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">Основной LLM провайдер</label>
+                                <select id="sys-primary-provider" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                                    <option value="gemini">🔵 Gemini API (Основной, быстрый)</option>
+                                    <option value="mistral">🟠 Mistral AI (Основной, европейский)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">
+                                    Температура генерации: <span id="sys-temp-value" style="color: #60a5fa; font-weight: 700;">0.20</span>
+                                </label>
+                                <div style="display: flex; align-items: center; gap: 10px; height: 38px;">
+                                    <input type="range" id="sys-temperature" min="0" max="1" step="0.05" value="0.2" style="flex: 1; accent-color: #3b82f6;">
+                                </div>
+                            </div>
                         </div>
-                        <input type="checkbox" id="sys-fallback-toggle" class="ios-toggle" checked>
-                    </div>
 
-                    <!-- Кнопка Менеджера API Ключей -->
-                    <div style="padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);">
-                        <button type="button" class="btn btn-secondary" id="sys-open-key-manager-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; border-color: rgba(59, 130, 246, 0.35); background: rgba(59, 130, 246, 0.12); color: #60a5fa;">
-                            <span>🔑 Менеджер API ключей (Gemini & Mistral)</span>
-                            <span id="key-manager-badge" class="badge" style="background: rgba(59, 130, 246, 0.25); color: #60a5fa; font-size: 11px; padding: 2px 6px;">0</span>
-                        </button>
+                        <!-- Fallback -->
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600; color: white;">Автоматический Fallback</div>
+                                <div style="font-size: 11px; color: var(--text-secondary);">При ошибках 429/исчерпании квоты основного провайдера переключаться на резервный</div>
+                            </div>
+                            <input type="checkbox" id="sys-fallback-toggle" class="ios-toggle" checked>
+                        </div>
+
+                        <!-- Кнопка Менеджера API Ключей -->
+                        <div style="padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);">
+                            <button type="button" class="btn btn-secondary" id="sys-open-key-manager-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; border-color: rgba(59, 130, 246, 0.35); background: rgba(59, 130, 246, 0.12); color: #60a5fa;">
+                                <span>🔑 Менеджер API ключей (Gemini & Mistral)</span>
+                                <span id="key-manager-badge" class="badge" style="background: rgba(59, 130, 246, 0.25); color: #60a5fa; font-size: 11px; padding: 2px 6px;">0</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Секция 2: Редактор Системного Промпта -->
-                <div>
+                <!-- Вкладка 2: Редактор Промпта Классификации -->
+                <div id="llm-tab-content-prompt" style="display: none;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                         <div>
                             <h4 style="margin: 0; font-size: 14px; color: white; display: flex; align-items: center; gap: 6px;">
-                                <span>📝</span>
-                                <span>Системный промпт (Prompt Template)</span>
+                                <span>🎯</span>
+                                <span>Промпт классификации вакансий и отклика (Prompt Template)</span>
                             </h4>
                             <p style="margin: 2px 0 0 0; font-size: 11px; color: var(--text-secondary);">
-                                Задает логику анализа соответствия и правила генерации сопроводительного письма
+                                Правила отбора вакансий, границы грейдов (Junior/Senior), учет стажа в годах, локация/часы и текст отклика
                             </p>
                         </div>
                         <button type="button" id="sys-reset-prompt-btn" class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px; display: flex; align-items: center; gap: 4px;">
@@ -459,13 +471,29 @@
                             <span class="prompt-var-tag" data-var="{vacancy_title}" title="Название должности">{vacancy_title}</span>
                             <span class="prompt-var-tag" data-var="{company}" title="Название компании">{company}</span>
                             <span class="prompt-var-tag" data-var="{salary}" title="Зарплатная вилка">{salary}</span>
+                            <span class="prompt-var-tag" data-var="{experience}" title="Требуемый опыт работы">{experience}</span>
+                            <span class="prompt-var-tag" data-var="{employment}" title="Тип занятости">{employment}</span>
+                            <span class="prompt-var-tag" data-var="{schedule}" title="График работы">{schedule}</span>
+                            <span class="prompt-var-tag" data-var="{location}" title="Локация / Город">{location}</span>
                             <span class="prompt-var-tag" data-var="{skills}" title="Ключевые навыки">{skills}</span>
                             <span class="prompt-var-tag" data-var="{description}" title="Описание вакансии">{description}</span>
                             <span class="prompt-var-tag" data-var="{threshold}" title="Порог соответствия (0-100)">{threshold}</span>
                         </div>
                     </div>
 
-                    <textarea id="sys-prompt-editor" rows="14" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 12px; font-family: 'JetBrains Mono', 'Consolas', monospace; line-height: 1.45; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: #f3f4f6; resize: vertical;"></textarea>
+                    <textarea id="sys-prompt-editor" rows="15" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 12px; font-family: 'JetBrains Mono', 'Consolas', monospace; line-height: 1.45; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: #f3f4f6; resize: vertical;"></textarea>
+
+                    <!-- Постфикс сопроводительного письма (подпись / контакты) -->
+                    <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.08);">
+                        <label for="sys-cover-letter-postfix" style="font-size: 13px; font-weight: 600; color: white; display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+                            <span>✍️</span>
+                            <span>Постфикс сопроводительного письма (подпись и контакты)</span>
+                        </label>
+                        <p style="margin: 0 0 8px 0; font-size: 11px; color: var(--text-secondary);">
+                            Текст, который автоматически добавляется в самый конец каждого сформированного сопроводительного письма (например: контакты в Telegram, телефон, портфолио или GitHub). Если пусто — письмо завершается стандартно.
+                        </p>
+                        <textarea id="sys-cover-letter-postfix" rows="3" placeholder="С уважением,&#10;Telegram: @username&#10;Телефон: +7 (999) 000-00-00&#10;GitHub: https://github.com/..." style="width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 12px; font-family: inherit; line-height: 1.4; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: #f3f4f6; resize: vertical;"></textarea>
+                    </div>
                 </div>
             </div>
 

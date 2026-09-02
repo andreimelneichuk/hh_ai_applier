@@ -95,6 +95,7 @@ def get_system_settings():
     return {
         "system_prompt": all_settings.get("system_prompt", database.DEFAULT_SYSTEM_PROMPT),
         "default_system_prompt": database.DEFAULT_SYSTEM_PROMPT,
+        "cover_letter_postfix": all_settings.get("cover_letter_postfix", ""),
         "primary_provider": all_settings.get("primary_provider", "gemini"),
         "fallback_enabled": fallback_bool,
         "temperature": temp_float,
@@ -107,6 +108,8 @@ def save_system_settings(payload: SystemSettingsPayload):
     """Сохраняет измененные системные настройки LLM."""
     if payload.system_prompt is not None:
         database.set_system_setting("system_prompt", payload.system_prompt)
+    if payload.cover_letter_postfix is not None:
+        database.set_system_setting("cover_letter_postfix", payload.cover_letter_postfix)
     if payload.primary_provider is not None:
         database.set_system_setting("primary_provider", payload.primary_provider)
     if payload.fallback_enabled is not None:

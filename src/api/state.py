@@ -35,6 +35,7 @@ class SearchSettings(BaseModel):
 
 class SystemSettingsPayload(BaseModel):
     system_prompt: Optional[str] = None
+    cover_letter_postfix: Optional[str] = None
     primary_provider: Optional[str] = "gemini"
     fallback_enabled: Optional[bool] = True
     temperature: Optional[float] = 0.2

@@ -198,6 +198,9 @@ async def quick_apply(payload: QuickApplyPayload):
             chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"])
 
             cover_letter = analysis.cover_letter or f"Здравствуйте!\n\nМеня заинтересовала вакансия {title} в компании {company}.\nБуду рад обсудить подробности на интервью."
+            postfix = database.get_system_setting("cover_letter_postfix") or ""
+            if postfix and postfix.strip() and not cover_letter.endswith(postfix.strip()):
+                cover_letter = f"{cover_letter.strip()}\n\n{postfix.strip()}"
 
             questions = hh_client.get_vacancy_questions(vacancy_id)
             questions_data_str = None

@@ -320,7 +320,24 @@ class HHBrowserClient:
                     if txt:
                         key_skills.append({"name": txt})
                 
-                # Опыт работы
+                # Полный текстовый контент резюме
+                raw_text = ""
+                try:
+                    raw_text = page.locator("body").inner_text()
+                except Exception:
+                    pass
+
+                # Общий стаж работы
+                total_experience = ""
+                total_exp_elem = page.query_selector('[data-qa="resume-block-experience-years"], .resume-block__title-text_sub, [data-qa="resume-block-experience"] h2 span')
+                if total_exp_elem:
+                    total_experience = total_exp_elem.text_content().strip()
+                if not total_experience and raw_text:
+                    match_exp = re.search(r'Опыт работы\s*([0-9]+(?:\s*(?:год|года|лет|месяц|месяца|месяцев))+(?:\s*[0-9]+\s*(?:месяц|месяца|месяцев))?)', raw_text, re.IGNORECASE)
+                    if match_exp:
+                        total_experience = match_exp.group(1).strip()
+
+                # Опыт работы (детальный)
                 experience = []
                 exp_blocks = page.query_selector_all('[data-qa="resume-block-experience-position"]')
                 for block in exp_blocks:
@@ -328,6 +345,7 @@ class HHBrowserClient:
                     parent = block.evaluate_handle("el => el.closest('.resume-block-item-gap')")
                     desc = ""
                     company = "Компания"
+                    period = ""
                     if parent:
                         desc_elem = parent.as_element().query_selector('[data-qa="resume-block-experience-description"]')
                         if desc_elem:
@@ -335,10 +353,16 @@ class HHBrowserClient:
                         comp_elem = parent.as_element().query_selector('[data-qa="resume-block-experience-company"]')
                         if comp_elem:
                             company = comp_elem.text_content().strip()
+                        date_elem = parent.as_element().query_selector('[data-qa="resume-block-experience-dates"], .bloko-column_xs-4, .bloko-column_s-2, .bloko-column_m-3')
+                        if date_elem:
+                            period = date_elem.text_content().strip().replace('\xa0', ' ')
+
                     experience.append({
                         "position": position,
                         "company": company,
-                        "description": desc
+                        "description": desc,
+                        "period": period,
+                        "start": period
                     })
                     
                 # Дополнительно извлекаем блок "О себе"
@@ -346,13 +370,10 @@ class HHBrowserClient:
                 if not skills and about_elem:
                     skills = about_elem.text_content().strip()
 
-                # Полный текстовый контент резюме
-                raw_text = ""
-                try:
-                    raw_text = page.locator("body").inner_text()
-                except Exception:
-                    pass
-                
+                # Локация кандидата / город / переезд
+                address_elem = page.query_selector('[data-qa="resume-personal-address"]')
+                address_text = address_elem.text_content().strip().replace('\xa0', ' ') if address_elem else ""
+
                 # Имя кандидата
                 name_elem = page.query_selector('[data-qa="resume-personal-name"]')
                 full_name = name_elem.text_content().strip() if name_elem else "Кандидат"
@@ -371,6 +392,8 @@ class HHBrowserClient:
                     "skills": skills,
                     "key_skills": key_skills,
                     "experience": experience,
+                    "total_experience": total_experience,
+                    "location": address_text,
                     "raw_text": raw_text,
                     "education": {"primary": []}
                 }
@@ -523,6 +546,18 @@ class HHBrowserClient:
                 
                 desc_elem = page.query_selector('[data-qa="vacancy-description"]')
                 description = desc_elem.text_content().strip() if desc_elem else ""
+
+                exp_elem = page.query_selector('[data-qa="vacancy-experience"]')
+                experience = exp_elem.text_content().strip() if exp_elem else "Не указан"
+
+                emp_elem = page.query_selector('[data-qa="vacancy-view-employment-mode"], [data-qa="vacancy-view-employment-type"]')
+                employment = emp_elem.text_content().strip() if emp_elem else "Не указана"
+
+                sched_elem = page.query_selector('[data-qa="vacancy-work-schedule-type"], [data-qa="vacancy-view-work-schedule"], [data-qa="work-schedule-type"]')
+                schedule = sched_elem.text_content().strip() if sched_elem else "Не указан"
+
+                loc_elem = page.query_selector('[data-qa="vacancy-view-raw-address"], [data-qa="vacancy-view-location"], [data-qa="vacancy-address"]')
+                location = loc_elem.text_content().strip() if loc_elem else "Не указана"
                 
                 skills = []
                 for s_elem in page.query_selector_all('[data-qa="bloko-tag__text"]'):
@@ -546,6 +581,10 @@ class HHBrowserClient:
                     "description": description,
                     "skills": skills,
                     "salary": salary,
+                    "experience": experience,
+                    "employment": employment,
+                    "schedule": schedule,
+                    "location": location,
                     "alternate_url": f"https://hh.ru/vacancy/{vacancy_id}",
                     "already_applied": already_applied
                 }

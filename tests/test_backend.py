@@ -457,5 +457,101 @@ class TestHHApplierComprehensive(unittest.TestCase):
         self.assertEqual(target_job["applied_resume_id"], "res_ml_ai")
         self.assertEqual(target_job["applied_resume_title"], "Machine Learning Engineer")
 
+    def test_16_classification_prompt_grade_and_experience_variables(self):
+        """Тестирование наличия строгих правил грейдов в DEFAULT_SYSTEM_PROMPT и подстановки новых переменных."""
+        from src.clients.llm import LLMAnalyzer
+
+        self.assertIn("СТРОГИЙ КОНТРОЛЬ ГРЕЙДА И РЕЛЕВАНТНОГО ОПЫТА", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("РЕЛЕВАНТНЫЙ коммерческий опыт", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("МЕСТО РАБОТЫ, ФОРМАТ И ЛОКАЦИЯ", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("ЗАНЯТОСТЬ, ГРАФИК И ЧАСЫ РАБОТЫ", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("{experience}", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("{employment}", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("{schedule}", database.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("{location}", database.DEFAULT_SYSTEM_PROMPT)
+
+        custom_prompt = (
+            "Вакансия: {vacancy_title}, Опыт: {experience}, Занятость: {employment}, "
+            "График: {schedule}, Локация: {location}, Кандидат: {resume_text}"
+        )
+        database.set_system_setting("system_prompt", custom_prompt)
+
+        analyzer = LLMAnalyzer()
+        built = analyzer._build_prompt(
+            resume_text="Junior Python Developer (1 год опыта)",
+            vacancy={
+                "title": "Senior Python Engineer",
+                "experience": "от 3 до 6 лет",
+                "employment": "Полная занятость",
+                "schedule": "Удаленная работа",
+                "location": "Москва"
+            },
+            match_threshold=80
+        )
+
+        self.assertIn("Senior Python Engineer", built)
+        self.assertIn("от 3 до 6 лет", built)
+        self.assertIn("Полная занятость", built)
+        self.assertIn("Удаленная работа", built)
+        self.assertIn("Москва", built)
+        self.assertIn("Junior Python Developer (1 год опыта)", built)
+
+    def test_17_format_hh_resume_experience_and_location(self):
+        """Тестирование включения общего стажа, локации и периодов работы в format_hh_resume_to_text."""
+        from src.pipeline.runner import format_hh_resume_to_text
+
+        resume_data = {
+            "first_name": "Иван",
+            "last_name": "Иванов",
+            "title": "Junior Backend Разработчик",
+            "total_experience": "1 год 4 месяца",
+            "location": "Пермь, не готов к переезду",
+            "employment": "Полная занятость",
+            "schedule": "Удаленная работа",
+            "skills": "Python, SQL, Django",
+            "experience": [
+                {
+                    "company": "Стартап",
+                    "position": "Junior Python Разработчик",
+                    "period": "Январь 2025 — по настоящее время (1 год)",
+                    "description": "Разработка REST API на FastAPI"
+                }
+            ]
+        }
+
+        formatted = format_hh_resume_to_text(resume_data)
+        self.assertIn("Общий стаж работы: 1 год 4 месяца", formatted)
+        self.assertIn("Город / Локация: Пермь, не готов к переезду", formatted)
+        self.assertIn("Предпочитаемая занятость: Полная занятость", formatted)
+        self.assertIn("Предпочитаемый график: Удаленная работа", formatted)
+        self.assertIn("Январь 2025 — по настоящее время (1 год)", formatted)
+
+    def test_18_cover_letter_postfix_saving_and_application(self):
+        """Тестирование сохранения и применения постфикса (подписи) к сопроводительному письму."""
+        from src.clients.llm import LLMAnalyzer
+
+        # 1. Проверяем сохранение через API системных настроек
+        postfix_text = "Telegram: @my_telegram | GitHub: github.com/test"
+        res = self.client.post("/api/system-settings", json={
+            "cover_letter_postfix": postfix_text
+        })
+        self.assertEqual(res.status_code, 200)
+
+        get_res = self.client.get("/api/system-settings")
+        self.assertEqual(get_res.status_code, 200)
+        self.assertEqual(get_res.json()["cover_letter_postfix"], postfix_text)
+
+        # 2. Проверяем добавление постфикса в анализаторе
+        analyzer = LLMAnalyzer()
+        res_analysis = analyzer._mock_analysis(
+            vacancy={"title": "Python Developer", "company": "TechLab", "skills": ["Python"]},
+            match_threshold=40
+        )
+        self.assertTrue(res_analysis.is_match)
+        self.assertIn(postfix_text, res_analysis.cover_letter)
+        self.assertTrue(res_analysis.cover_letter.strip().endswith(postfix_text))
+
 if __name__ == "__main__":
     unittest.main()
+
+
