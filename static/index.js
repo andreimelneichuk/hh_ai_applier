@@ -1351,7 +1351,10 @@ function renderJobsList(append = false) {
             
             let quickBtnHtml = "";
             if (job.status !== "applied" && job.status !== "already_applied") {
-                quickBtnHtml = `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.15); color: #c7d2fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleQuickApply('${job.id}')" title="Сгенерировать письмо, ответить на вопросы и отправить">⚡ ИИ-отклик</button>`;
+                const genBtnHtml = (job.status === "ignored" && !job.cover_letter)
+                    ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; border-radius: var(--radius-pill); border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.15); color: #d8b4fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleGenerateLetterQuick('${job.id}')" title="Сгенерировать сопроводительное письмо с ИИ">✨ Письмо</button>`
+                    : '';
+                quickBtnHtml = `${genBtnHtml}<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.15); color: #c7d2fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleQuickApply('${job.id}')" title="Сгенерировать письмо, ответить на вопросы и отправить">⚡ ИИ-отклик</button>`;
             }
             
             const resumeBadgeHtml = job.applied_resume_title 
@@ -1480,6 +1483,40 @@ function openModal(job) {
     applyBtn.classList.remove("hide");
     ignoreBtn.classList.remove("hide");
     
+    const genLetterBtn = document.getElementById("modal-generate-letter-btn");
+    const genLetterText = document.getElementById("modal-generate-letter-text");
+    const genLetterIcon = document.getElementById("modal-generate-letter-icon");
+    const letterHint = document.getElementById("modal-letter-hint");
+
+    const updateLetterBtnState = () => {
+        if (!genLetterBtn) return;
+        if (job.status === "applied" || job.status === "already_applied") {
+            genLetterBtn.classList.add("hide");
+        } else {
+            genLetterBtn.classList.remove("hide");
+            genLetterBtn.removeAttribute("disabled");
+            if (genLetterIcon) genLetterIcon.textContent = "✨";
+            if (genLetterText) {
+                genLetterText.textContent = textarea.value.trim() ? "Перегенерировать с ИИ" : "Сгенерировать письмо с ИИ";
+            }
+        }
+        if (letterHint) {
+            if (job.status === "ignored" && !textarea.value.trim()) {
+                letterHint.classList.remove("hide");
+            } else {
+                letterHint.classList.add("hide");
+            }
+        }
+    };
+    updateLetterBtnState();
+    textarea.oninput = updateLetterBtnState;
+
+    if (genLetterBtn) {
+        genLetterBtn.onclick = async () => {
+            await doGenerateCoverLetter(job, textarea, genLetterBtn, genLetterText, genLetterIcon, letterHint);
+        };
+    }
+    
     const defaultApplyText = userSettings.dry_run ? "Симуляция отклика (Dry Run)" : "Откликнуться";
     
     if (job.status === "applied" || job.status === "already_applied") {
@@ -1501,9 +1538,16 @@ function openModal(job) {
     }
     
     applyBtn.onclick = async () => {
-        const coverLetter = textarea.value.trim();
+        let coverLetter = textarea.value.trim();
         if (!coverLetter) {
-            showToast("Пожалуйста, напишите сопроводительное письмо.", "error");
+            showToast("Сопроводительное письмо отсутствует. Запускаем генерацию с ИИ...", "info");
+            await doGenerateCoverLetter(job, textarea, genLetterBtn, genLetterText, genLetterIcon, letterHint);
+            coverLetter = textarea.value.trim();
+            if (!coverLetter) {
+                showToast("Пожалуйста, напишите сопроводительное письмо перед отправкой.", "error");
+                return;
+            }
+            showToast("Письмо сгенерировано! Проверьте текст и нажмите «Откликнуться сейчас».", "info");
             return;
         }
         
@@ -2456,6 +2500,58 @@ async function handleQuickApply(urlOrId) {
     }
 }
 window.handleQuickApply = handleQuickApply;
+
+async function doGenerateCoverLetter(job, textarea, btn, btnText, btnIcon, hintElem) {
+    if (btn) btn.setAttribute("disabled", "true");
+    if (btnIcon) btnIcon.textContent = "⏳";
+    if (btnText) btnText.textContent = "Генерация ИИ...";
+    showToast("✨ ИИ составляет персонализированное сопроводительное письмо...", "info");
+
+    try {
+        const response = await fetch(`/api/generate-cover-letter/${job.id}`, {
+            method: "POST"
+        });
+        const data = await response.json();
+        if (response.ok && data.status === "ok") {
+            textarea.value = data.cover_letter;
+            job.cover_letter = data.cover_letter;
+            const found = currentJobs.find(j => String(j.id) === String(job.id));
+            if (found) found.cover_letter = data.cover_letter;
+            showToast("✅ Сопроводительное письмо успешно составлено!", "success");
+            if (hintElem) hintElem.classList.add("hide");
+        } else {
+            showToast("Ошибка генерации письма: " + (data.message || data.detail || "не удалось сгенерировать"), "error");
+        }
+    } catch (e) {
+        console.error("Error generating cover letter:", e);
+        showToast("Сетевая ошибка при генерации письма.", "error");
+    } finally {
+        if (btn) btn.removeAttribute("disabled");
+        if (btnIcon) btnIcon.textContent = "✨";
+        if (btnText) btnText.textContent = textarea.value.trim() ? "Перегенерировать с ИИ" : "Сгенерировать письмо с ИИ";
+    }
+}
+
+async function handleGenerateLetterQuick(jobId) {
+    const job = currentJobs.find(j => String(j.id) === String(jobId));
+    const title = job ? job.title : jobId;
+    showToast(`✨ ИИ составляет письмо для "${title}"...`, "info");
+    try {
+        const response = await fetch(`/api/generate-cover-letter/${jobId}`, { method: "POST" });
+        const data = await response.json();
+        if (response.ok && data.status === "ok") {
+            if (job) job.cover_letter = data.cover_letter;
+            showToast(`✅ Письмо для "${title}" готово! Нажмите на вакансию для просмотра.`, "success");
+            renderJobsList(false);
+        } else {
+            showToast("Ошибка при генерации письма: " + (data.message || data.detail || "не удалось составить"), "error");
+        }
+    } catch (e) {
+        console.error("Error generating letter quick:", e);
+        showToast("Сетевая ошибка при генерации письма.", "error");
+    }
+}
+window.handleGenerateLetterQuick = handleGenerateLetterQuick;
 
 /**
  * Liquid Glass Dynamic Specular Highlights & Pointer Morphology

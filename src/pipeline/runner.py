@@ -83,8 +83,31 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
         parts.append(f"Город / Локация: {location}")
         
     relocation = resume_data.get('relocation')
+    relocation_cities = resume_data.get('relocation_cities')
+    
+    # Резервный источник: сохраненные ответы профиля пользователя
+    if not relocation and not relocation_cities:
+        try:
+            from src.db import database
+            user_saved = database.get_user_profile_answers()
+            for item in user_saved:
+                k = item.get("key", "").lower()
+                if k in ("relocation_cities", "relocate", "relocation", "target_cities"):
+                    relocation = item.get("answer")
+                    break
+        except Exception:
+            pass
+
     if relocation:
-        parts.append(f"Переезд / Командировки: {relocation}")
+        parts.append(f"Готовность к переезду: {relocation}")
+        
+    if relocation_cities:
+        if isinstance(relocation_cities, list):
+            cities_str = ", ".join(relocation_cities)
+        else:
+            cities_str = str(relocation_cities)
+        if cities_str:
+            parts.append(f"Города, куда готов переехать: {cities_str}")
         
     employment_pref = resume_data.get('employment') or resume_data.get('employment_preference')
     if employment_pref:

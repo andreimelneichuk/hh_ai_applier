@@ -195,9 +195,9 @@ async def quick_apply(payload: QuickApplyPayload):
             
             chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
             chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
-            chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"])
-
-            cover_letter = analysis.cover_letter or f"Здравствуйте!\n\nМеня заинтересовала вакансия {title} в компании {company}.\nБуду рад обсудить подробности на интервью."
+            cover_letter = analysis.cover_letter
+            if not cover_letter or not cover_letter.strip():
+                cover_letter = analyzer.generate_cover_letter(chosen_resume_text, details, resumes=candidate_resumes)
             postfix = database.get_system_setting("cover_letter_postfix") or ""
             if postfix and postfix.strip() and not cover_letter.endswith(postfix.strip()):
                 cover_letter = f"{cover_letter.strip()}\n\n{postfix.strip()}"
@@ -437,6 +437,71 @@ async def reanalyze_vacancy(vacancy_id: str):
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     
+    return result
+
+@router.post("/api/generate-cover-letter/{vacancy_id}")
+async def generate_cover_letter_endpoint(vacancy_id: str):
+    """Генерация персонализированного сопроводительного письма с ИИ для конкретной вакансии."""
+    row = database.get_vacancy(vacancy_id)
+
+    def _do_generate():
+        hh_client = HHBrowserClient()
+        try:
+            applied_resume_id = row[8] if row and len(row) > 8 else None
+            target_resume_id = applied_resume_id or database.get_config_value("resume_id") or Config.HH_RESUME_ID
+            if target_resume_id and target_resume_id.startswith("your_"):
+                target_resume_id = ""
+
+            candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
+            if not candidate_resumes:
+                return {"status": "error", "message": "Резюме не найдено ни в профиле HH, ни локально"}
+
+            details = None
+            try:
+                details = hh_client.get_vacancy_details(vacancy_id)
+            except Exception as e:
+                logger.warning(f"Не удалось загрузить страницу вакансии {vacancy_id} через браузер: {e}")
+
+            if not details or not details.get("title") or not details.get("description"):
+                details = {
+                    "title": row[1] if row and len(row) > 1 else "Вакансия",
+                    "company": row[2] if row and len(row) > 2 else "",
+                    "description": "",
+                    "skills": []
+                }
+
+            chosen_resume = next((r for r in candidate_resumes if r.get("id") == applied_resume_id), candidate_resumes[0])
+            chosen_resume_text = chosen_resume.get("text", "")
+
+            analyzer = LLMAnalyzer()
+            letter = analyzer.generate_cover_letter(chosen_resume_text, details, resumes=candidate_resumes)
+
+            if row:
+                import sqlite3
+                conn = sqlite3.connect(database.DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE processed_vacancies SET cover_letter = ? WHERE id = ?",
+                    (letter, vacancy_id)
+                )
+                conn.commit()
+                conn.close()
+
+            logger.info(f"Сопроводительное письмо для вакансии {vacancy_id} успешно сгенерировано ({len(letter)} симв.).")
+            return {
+                "status": "ok",
+                "cover_letter": letter,
+                "vacancy_id": vacancy_id
+            }
+        except Exception as e:
+            logger.error(f"Ошибка при генерации сопроводительного письма для {vacancy_id}: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
+        finally:
+            hh_client.stop()
+
+    result = await run_in_clean_thread(_do_generate)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message", "Ошибка генерации письма"))
     return result
 
 @router.post("/api/reanalyze-all-failed")

@@ -266,8 +266,17 @@
                             <div id="modal-questions-list" style="display: flex; flex-direction: column; gap: 12px;"></div>
                         </div>
 
-                        <h4>Сопроводительное письмо</h4>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <h4 style="margin: 0;">Сопроводительное письмо</h4>
+                            <button id="modal-generate-letter-btn" type="button" class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.15); color: #d8b4fe; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; transition: all 0.2s;" title="Сгенерировать сопроводительное письмо с помощью ИИ">
+                                <span id="modal-generate-letter-icon">✨</span>
+                                <span id="modal-generate-letter-text">Сгенерировать письмо с ИИ</span>
+                            </button>
+                        </div>
                         <p class="text-muted subtext">Вы можете скорректировать сгенерированный текст письма перед отправкой.</p>
+                        <div id="modal-letter-hint" class="hide" style="margin-bottom: 8px; padding: 6px 10px; border-radius: 6px; font-size: 11px; background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.25); color: #e9d5ff;">
+                            💡 Вакансия была отсеяна ИИ, поэтому письмо не создавалось автоматически. Нажмите <b>«Сгенерировать письмо с ИИ»</b>, чтобы составить персонализированное письмо.
+                        </div>
                         <textarea id="modal-cover-letter-input" rows="8"></textarea>
                         
                         <div class="modal-actions" style="margin-top: 14px;">

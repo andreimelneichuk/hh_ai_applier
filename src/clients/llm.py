@@ -47,6 +47,9 @@ class QuestionsAnalysisResult(BaseModel):
     answers: List[QuestionAnswer] = Field(description="Список ответов на каждый заданный вопрос")
     all_confident: bool = Field(description="True, если все вопросы закрыты уверенно и не требуют ручного ввода")
 
+class CoverLetterResult(BaseModel):
+    cover_letter: str = Field(description="Краткое (3-5 предложений), персонализированное сопроводительное письмо на русском языке на основе выбранного резюме.")
+
 class LLMAnalyzer:
     _gemini_key_statuses: Dict[str, dict] = {}   # key -> {"status": "ok"|"error", "reason": ..., "detail": ..., "last_checked": float}
     _mistral_key_statuses: Dict[str, dict] = {}  # key -> {"status": "ok"|"error", "reason": ..., "detail": ..., "last_checked": float}
@@ -998,4 +1001,261 @@ class LLMAnalyzer:
                 return self._mock_questions_analysis(questions, user_saved_answers)
 
         return self._mock_questions_analysis(questions, user_saved_answers)
+
+    def _build_cover_letter_prompt(self, resume_text: str, vacancy: Dict[str, Any], resumes: List[Dict[str, Any]] = None) -> str:
+        """Формирует целевой промпт для генерации сопроводительного письма."""
+        skills_raw = vacancy.get('skills', [])
+        skills_str = ', '.join(skills_raw) if isinstance(skills_raw, list) else str(skills_raw or '')
+        
+        final_resume_text = str(resume_text or "")
+        multi_info = ""
+        if resumes and len(resumes) > 1:
+            res_blocks = []
+            for idx, r in enumerate(resumes, 1):
+                r_id = r.get("id", f"resume_{idx}")
+                r_title = r.get("title", f"Резюме {idx}")
+                r_text = r.get("text", "")
+                res_blocks.append(f"=== [РЕЗЮМЕ #{idx}] ID: {r_id} | Должность: {r_title} ===\n{r_text}\n")
+            final_resume_text = "\n".join(res_blocks)
+            multi_info = "\nВыберите факты и стек из наиболее подходящего резюме кандидата."
+        elif resumes and len(resumes) == 1:
+            final_resume_text = resumes[0].get("text", "")
+
+        return f"""Вы — профессиональный IT-рекрутер и карьерный консультант.
+Ваша цель — составить убедительное, персонализированное и живое сопроводительное письмо (Cover Letter) для отклика на hh.ru от имени кандидата.
+
+ВАЖНО: Даже если кандидат формально не подходит по всем критериям (например, вакансия была отсеяна автоматическим фильтром), найдите реальные точки соприкосновения, релевантный смежный опыт, владение технологиями и сильную мотивацию. Подчеркните готовность быстро включиться в работу и принести пользу. Ни в коем случае не пишите «я знаю, что не подхожу» или другие извиняющиеся фразы — тон должен быть уверенным и позитивным.
+
+РЕЗЮМЕ КАНДИДАТА:
+{final_resume_text}
+{multi_info}
+
+ВАКАНСИЯ:
+Название: {vacancy.get('title', 'Вакансия')}
+Компания: {vacancy.get('company', '')}
+Зарплата: {vacancy.get('salary', 'Не указана')}
+Требуемый опыт: {vacancy.get('experience', 'Не указан')}
+Занятость: {vacancy.get('employment', 'Не указана')}
+График: {vacancy.get('schedule', 'Не указан')}
+Локация: {vacancy.get('location', 'Не указана')}
+Ключевые навыки: {skills_str}
+Описание:
+{vacancy.get('description', '')}
+
+СТРОГИЕ ПРАВИЛА СОПРОВОДИТЕЛЬНОГО ПИСЬМА:
+1. ОБЪЕМ: ровно 3-5 емких предложений (до 600-800 символов). Рекрутеры читают письмо по диагонали.
+2. БЕЗ ШАБЛОНОВ И ВОДЫ: Запрещены штампы «Прошу рассмотреть мою кандидатуру», «Я коммуникабельный и стрессоустойчивый», «С интересом ознакомился».
+3. СТРУКТУРА:
+   - Живой заход: «Здравствуйте! Откликаюсь на позицию {vacancy.get('title', 'вакансии')}. Мой бэкграунд отлично перекликается с вашими задачами:» (название компании напрямую не упоминайте, чтобы звучало естественно).
+   - Суть и ценность: 1-2 предложения с точным попаданием в ключевой стек, релевантные проекты или смежные сильные стороны из резюме.
+   - Завершение и диалог: «Буду рад подробнее обсудить задачи на интервью. С уважением, [Имя кандидата из резюме]».
+4. ТОН: уверенный, профессиональный, на русском языке.
+5. ПРАВДИВОСТЬ: опирайтесь строго на реальный опыт, навыки и проекты кандидата из резюме. Не выдумывайте опыт.
+
+Верните строго JSON в формате:
+{{
+  "cover_letter": "текст сопроводительного письма"
+}}
+"""
+
+    def _call_gemini_cover_letter(self, prompt: str, target_model: str, temperature: float = 0.2) -> str:
+        """Запрос к Gemini для генерации сопроводительного письма с ротацией ключей."""
+        tried_keys = set()
+        while len(tried_keys) < len(self.gemini_keys):
+            active_key, active_client = self._get_active_gemini_client()
+            if not active_client or active_key in tried_keys:
+                break
+            tried_keys.add(active_key)
+            key_tag = f"...{active_key[-6:]}" if len(active_key) > 6 else active_key
+            try:
+                logger.info(f"Отправка запроса к Gemini [{target_model}, ключ {key_tag}] для генерации сопроводительного письма...")
+                response = active_client.models.generate_content(
+                    model=target_model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=CoverLetterResult,
+                        temperature=temperature,
+                    )
+                )
+                LLMAnalyzer._gemini_key_statuses[active_key] = {"status": "ok", "last_checked": time.time()}
+                result = CoverLetterResult.model_validate_json(response.text)
+                return result.cover_letter.strip()
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                    logger.warning(f"Исчерпан лимит квоты Gemini на ключе {key_tag} (429). Переключаемся...")
+                    LLMAnalyzer._gemini_key_statuses[active_key] = {"status": "error", "reason": "rate_limit_or_quota", "detail": err_msg, "last_checked": time.time()}
+                    LLMAnalyzer._current_gemini_idx = (LLMAnalyzer._current_gemini_idx + 1) % len(self.gemini_keys)
+                    continue
+                elif "403" in err_msg or "API_KEY_INVALID" in err_msg:
+                    LLMAnalyzer._gemini_key_statuses[active_key] = {"status": "error", "reason": "invalid_api_key", "detail": err_msg, "last_checked": time.time()}
+                    LLMAnalyzer._current_gemini_idx = (LLMAnalyzer._current_gemini_idx + 1) % len(self.gemini_keys)
+                    continue
+                else:
+                    logger.error(f"Ошибка Gemini при генерации письма: {e}")
+                    raise e
+        raise QuotaExceededError("Все ключи Gemini исчерпали квоту.")
+
+    def _call_mistral_cover_letter(self, prompt: str, target_model: str, temperature: float = 0.2) -> str:
+        """Запрос к Mistral для генерации сопроводительного письма."""
+        if not self.mistral_keys:
+            raise QuotaExceededError("Ключи Mistral API не настроены.")
+        tried_keys = set()
+        while len(tried_keys) < len(self.mistral_keys):
+            active_key = self._get_active_mistral_key()
+            if not active_key or active_key in tried_keys:
+                break
+            tried_keys.add(active_key)
+            key_tag = f"...{active_key[-6:]}" if len(active_key) > 6 else active_key
+            try:
+                logger.info(f"Отправка запроса к Mistral [{target_model}, ключ {key_tag}] для генерации сопроводительного письма...")
+                headers = {"Authorization": f"Bearer {active_key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": target_model,
+                    "messages": [
+                        {"role": "system", "content": "You are a professional career consultant writing a personalized cover letter in Russian. Return valid JSON matching schema: {\"cover_letter\": str}."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": temperature
+                }
+                resp = requests.post("https://api.mistral.ai/v1/chat/completions", headers=headers, json=payload, timeout=45)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    LLMAnalyzer._mistral_key_statuses[active_key] = {"status": "ok", "last_checked": time.time()}
+
+                    raw_content = content.strip()
+                    if raw_content.startswith("```"):
+                        lines = raw_content.splitlines()
+                        if lines[0].startswith("```"):
+                            lines = lines[1:]
+                        if lines and lines[-1].startswith("```"):
+                            lines = lines[:-1]
+                        raw_content = "\n".join(lines).strip()
+
+                    parsed = json.loads(raw_content)
+                    if isinstance(parsed, dict) and "cover_letter" in parsed:
+                        return parsed["cover_letter"].strip()
+                    elif isinstance(parsed, dict):
+                        return next(iter(parsed.values()), "").strip()
+                    return str(parsed).strip()
+                elif resp.status_code == 429:
+                    logger.warning(f"Исчерпан лимит квоты Mistral на ключе {key_tag} (429). Переключаемся...")
+                    LLMAnalyzer._mistral_key_statuses[active_key] = {"status": "error", "reason": "rate_limit_or_quota", "detail": resp.text, "last_checked": time.time()}
+                    LLMAnalyzer._current_mistral_idx = (LLMAnalyzer._current_mistral_idx + 1) % len(self.mistral_keys)
+                    continue
+                else:
+                    raise Exception(f"Mistral API error HTTP {resp.status_code}: {resp.text}")
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg:
+                    continue
+                logger.error(f"Ошибка Mistral при генерации письма: {e}")
+                raise e
+        raise QuotaExceededError("Все ключи Mistral исчерпали квоту.")
+
+    def _mock_cover_letter(self, resume_text: str, vacancy: Dict[str, Any]) -> str:
+        """Эвристическая генерация письма при отсутствии или сбое LLM API."""
+        title = vacancy.get('title', 'позицию разработчика')
+        company = vacancy.get('company', '')
+        skills = vacancy.get('skills', [])
+        skills_str = ', '.join(skills[:4]) if isinstance(skills, list) and skills else ""
+        
+        name = "Кандидат"
+        for line in (resume_text or "").splitlines()[:5]:
+            clean_l = line.strip()
+            if clean_l and len(clean_l.split()) in (2, 3) and not any(ch in clean_l for ch in [":", "@", "/", "\\", "{", "}"]):
+                name = clean_l
+                break
+
+        stack_sentence = f"Имею опыт решения прикладных задач с использованием {skills_str} и готов быстро включиться в работу над вашими проектами." if skills_str else "Мой практический опыт в разработке позволяет быстро погружаться в новые задачи и проектный контекст."
+        
+        letter = (
+            f"Здравствуйте!\n\n"
+            f"Меня заинтересовала вакансия {title}. {stack_sentence}\n\n"
+            f"Буду рад подробнее обсудить задачи и требования на интервью.\n\n"
+            f"С уважением,\n{name}"
+        )
+        return letter
+
+    def generate_cover_letter(self, resume_text: str = "", vacancy: Dict[str, Any] = None, resumes: List[Dict[str, Any]] = None) -> str:
+        """
+        Генерирует качественное персонализированное сопроводительное письмо на основе вакансии и резюме.
+        Применяет настроенный постфикс (cover_letter_postfix).
+        """
+        if not vacancy:
+            vacancy = {}
+
+        if resumes and not resume_text:
+            resume_text = resumes[0].get("text", "")
+
+        prompt = self._build_cover_letter_prompt(resume_text, vacancy, resumes)
+
+        has_gemini = bool(self.gemini_keys and genai)
+        has_mistral = bool(self.mistral_keys)
+
+        letter = ""
+        if not has_gemini and not has_mistral:
+            logger.warning("API ключи не настроены. Использование эвристического сопроводительного письма.")
+            letter = self._mock_cover_letter(resume_text, vacancy)
+        else:
+            primary_provider = database.get_system_setting("primary_provider", "gemini").lower()
+            fallback_enabled_str = database.get_system_setting("fallback_enabled", "true")
+            fallback_enabled = fallback_enabled_str.lower() in ("true", "1", "yes") if fallback_enabled_str else True
+
+            try:
+                temp_val = float(database.get_system_setting("temperature", "0.2"))
+            except (ValueError, TypeError):
+                temp_val = 0.2
+
+            target_gemini_model = database.get_config_value("gemini_model") or Config.GEMINI_MODEL or "gemini-3.6-flash"
+            target_mistral_model = database.get_config_value("mistral_model") or Config.MISTRAL_MODEL or "mistral-small-latest"
+
+            if primary_provider == "mistral" and has_mistral:
+                try:
+                    letter = self._call_mistral_cover_letter(prompt, target_mistral_model, temperature=temp_val)
+                except Exception as me:
+                    if fallback_enabled and has_gemini:
+                        logger.warning(f"Mistral вернул ошибку при генерации письма ({me}). Переход на Gemini...")
+                        try:
+                            letter = self._call_gemini_cover_letter(prompt, target_gemini_model, temperature=temp_val)
+                        except Exception as ge:
+                            logger.warning(f"Gemini также вернул ошибку ({ge}). Переход на шаблон.")
+                            letter = self._mock_cover_letter(resume_text, vacancy)
+                    else:
+                        letter = self._mock_cover_letter(resume_text, vacancy)
+            elif has_gemini:
+                try:
+                    letter = self._call_gemini_cover_letter(prompt, target_gemini_model, temperature=temp_val)
+                except Exception as ge:
+                    if fallback_enabled and has_mistral:
+                        logger.warning(f"Gemini вернул ошибку при генерации письма ({ge}). Переход на Mistral...")
+                        try:
+                            letter = self._call_mistral_cover_letter(prompt, target_mistral_model, temperature=temp_val)
+                        except Exception as me:
+                            logger.warning(f"Mistral также вернул ошибку ({me}). Переход на шаблон.")
+                            letter = self._mock_cover_letter(resume_text, vacancy)
+                    else:
+                        letter = self._mock_cover_letter(resume_text, vacancy)
+            elif has_mistral:
+                try:
+                    letter = self._call_mistral_cover_letter(prompt, target_mistral_model, temperature=temp_val)
+                except Exception as me:
+                    letter = self._mock_cover_letter(resume_text, vacancy)
+
+        if not letter or not letter.strip():
+            letter = self._mock_cover_letter(resume_text, vacancy)
+
+        # Применение постфикса
+        postfix = database.get_system_setting("cover_letter_postfix") or ""
+        if postfix and postfix.strip():
+            clean_letter = letter.strip()
+            clean_postfix = postfix.strip()
+            if not clean_letter.endswith(clean_postfix):
+                letter = f"{clean_letter}\n\n{clean_postfix}"
+
+        return letter
+
 

@@ -551,6 +551,97 @@ class TestHHApplierComprehensive(unittest.TestCase):
         self.assertIn(postfix_text, res_analysis.cover_letter)
         self.assertTrue(res_analysis.cover_letter.strip().endswith(postfix_text))
 
+    def test_19_llm_analyzer_generate_cover_letter(self):
+        """Тестирование генерации сопроводительного письма методом generate_cover_letter."""
+        from src.clients.llm import LLMAnalyzer
+
+        analyzer = LLMAnalyzer()
+        resume_text = "Иван Иванов\nPython разработчик, 3 года опыта. FastAPI, PostgreSQL, Docker."
+        vacancy = {
+            "title": "Backend Python Developer",
+            "company": "Tech Innovations",
+            "skills": ["Python", "FastAPI"]
+        }
+
+        letter = analyzer.generate_cover_letter(resume_text=resume_text, vacancy=vacancy)
+        self.assertIsInstance(letter, str)
+        self.assertTrue(len(letter) > 20)
+        self.assertIn("Backend Python Developer", letter)
+
+    @patch("src.api.routes.vacancies.HHBrowserClient")
+    def test_20_generate_cover_letter_endpoint(self, mock_hh_class):
+        """Тестирование эндпоинта POST /api/generate-cover-letter/{vacancy_id} для отсеянной вакансии."""
+        # Мокаем HHBrowserClient
+        mock_hh = MagicMock()
+        mock_hh_class.return_value = mock_hh
+        mock_hh.get_my_resumes.return_value = [
+            {"id": "res_1", "title": "Python Developer", "text": "Python Developer 3 года опыта. FastAPI, Docker."}
+        ]
+        mock_hh.get_vacancy_details.return_value = {
+            "title": "Middle Python Developer",
+            "company": "Acme Corp",
+            "description": "Ищем сильного разработчика",
+            "skills": ["Python", "FastAPI"]
+        }
+
+        # Добавляем вакансию со статусом ignored и пустым cover_letter
+        conn = sqlite3.connect(TEST_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO processed_vacancies (id, title, company, status, match_score, analysis_reason, cover_letter, processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("vac_ignored_1", "Middle Python Developer", "Acme Corp", "ignored", 35, "Недостаточно стажа", "", "2026-09-04 12:00:00")
+        )
+        conn.commit()
+        conn.close()
+
+        # Вызываем эндпоинт генерации письма
+        res = self.client.post("/api/generate-cover-letter/vac_ignored_1")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["vacancy_id"], "vac_ignored_1")
+        self.assertTrue(len(data["cover_letter"]) > 10)
+
+        # Проверяем, что письмо сохранилось в базе данных
+        conn = sqlite3.connect(TEST_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT cover_letter FROM processed_vacancies WHERE id = ?", ("vac_ignored_1",))
+        row = cursor.fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], data["cover_letter"])
+
+    def test_21_relocation_and_cities_formatting_and_fallback(self):
+        """Тестирование корректного включения города проживания, готовности к переезду и целевых городов."""
+        from src.pipeline.runner import format_hh_resume_to_text
+
+        # 1. Резюме с явным указанием переезда и списка городов
+        resume_data_1 = {
+            "first_name": "Алексей",
+            "last_name": "Петров",
+            "title": "Backend Python Developer",
+            "location": "Пермь",
+            "relocation": "готов к переезду (Москва, Санкт-Петербург), готов к редким командировкам",
+            "relocation_cities": ["Москва", "Санкт-Петербург"]
+        }
+        text_1 = format_hh_resume_to_text(resume_data_1)
+        self.assertIn("Город / Локация: Пермь", text_1)
+        self.assertIn("Готовность к переезду: готов к переезду (Москва, Санкт-Петербург), готов к редким командировкам", text_1)
+        self.assertIn("Города, куда готов переехать: Москва, Санкт-Петербург", text_1)
+
+        # 2. Проверка фолбека на user_profile_answers, если в самом резюме поле переезда пустое
+        database.set_user_profile_answer("relocation_cities", "Города для переезда / релокации", "Готов к переезду: Казань, Екатеринбург")
+        resume_data_2 = {
+            "first_name": "Алексей",
+            "last_name": "Петров",
+            "title": "Backend Python Developer",
+            "location": "Пермь"
+        }
+        text_2 = format_hh_resume_to_text(resume_data_2)
+        self.assertIn("Город / Локация: Пермь", text_2)
+        self.assertIn("Готовность к переезду: Готов к переезду: Казань, Екатеринбург", text_2)
+
 if __name__ == "__main__":
     unittest.main()
 

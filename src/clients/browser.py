@@ -374,6 +374,65 @@ class HHBrowserClient:
                 address_elem = page.query_selector('[data-qa="resume-personal-address"]')
                 address_text = address_elem.text_content().strip().replace('\xa0', ' ') if address_elem else ""
 
+                # Извлечение информации о переезде и командировках
+                relocation_elem = page.query_selector(
+                    '[data-qa="resume-personal-relocation"], '
+                    '[data-qa*="personal-relocation"], '
+                    '[data-qa*="relocation"], '
+                    '.resume-block__relocation'
+                )
+                relocation_text = relocation_elem.text_content().strip().replace('\xa0', ' ') if relocation_elem else ""
+
+                if not relocation_text and address_elem:
+                    try:
+                        parent_text = address_elem.evaluate("el => el.parentElement ? el.parentElement.innerText : ''")
+                        if parent_text:
+                            clean_parent = parent_text.replace('\xa0', ' ').strip()
+                            if "переезд" in clean_parent.lower() or "командировк" in clean_parent.lower():
+                                idx = clean_parent.lower().find("готов")
+                                if idx != -1:
+                                    relocation_text = clean_parent[idx:].strip()
+                                else:
+                                    relocation_text = clean_parent
+                    except Exception:
+                        pass
+
+                if not relocation_text and raw_text:
+                    match_reloc = re.search(
+                        r'((?:не\s+готов[а]?\s+к\s+переезду|готов[а]?\s+к\s+переезду[^\n,\.]*(?:\([^)]+\)|:[^\n]+)?|хочу\s+переехать[^\n]+)(?:,\s*(?:не\s+готов[а]?|готов[а]?)\s+к\s+(?:редким\s+)?командировкам)?)',
+                        raw_text,
+                        re.IGNORECASE
+                    )
+                    if match_reloc:
+                        relocation_text = match_reloc.group(1).strip()
+
+                if relocation_text:
+                    relocation_text = relocation_text.lstrip(",. ").strip()
+
+                # Если в address_text попали данные о переезде, разделяем их
+                if address_text and "готов" in address_text.lower() and "переезд" in address_text.lower():
+                    addr_parts = address_text.split(",", 1)
+                    address_text = addr_parts[0].strip()
+                    if not relocation_text and len(addr_parts) > 1:
+                        relocation_text = addr_parts[1].strip()
+
+                # Извлекаем список конкретных городов для переезда
+                relocation_cities = []
+                if relocation_text and "не готов" not in relocation_text.lower():
+                    match_paren = re.search(r'\(([^)]+)\)', relocation_text)
+                    match_colon = re.search(r':\s*([^,\n]+(?:,\s*[^,\n]+)*)', relocation_text)
+                    target_str = ""
+                    if match_paren:
+                        target_str = match_paren.group(1)
+                    elif match_colon:
+                        target_str = match_colon.group(1)
+
+                    if target_str:
+                        for c in target_str.split(","):
+                            clean_c = c.strip()
+                            if clean_c and not clean_c.lower().startswith("готов") and not clean_c.lower().startswith("командировк"):
+                                relocation_cities.append(clean_c)
+
                 # Имя кандидата
                 name_elem = page.query_selector('[data-qa="resume-personal-name"]')
                 full_name = name_elem.text_content().strip() if name_elem else "Кандидат"
@@ -394,6 +453,8 @@ class HHBrowserClient:
                     "experience": experience,
                     "total_experience": total_experience,
                     "location": address_text,
+                    "relocation": relocation_text,
+                    "relocation_cities": relocation_cities,
                     "raw_text": raw_text,
                     "education": {"primary": []}
                 }
