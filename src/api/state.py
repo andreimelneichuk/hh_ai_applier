@@ -31,7 +31,14 @@ class SearchSettings(BaseModel):
     gemini_api_keys: str = ""
     gemini_model: str = "gemini-3.6-flash"
     mistral_api_keys: str = ""
-    mistral_model: str = "mistral-small-latest"
+    mistral_model: str = "open-mistral-nemo"
+    openai_api_keys: Optional[str] = ""
+    openai_provider_preset: Optional[str] = "groq"
+    openai_base_url: Optional[str] = "https://api.groq.com/openai/v1"
+    openai_model: Optional[str] = "llama-3.3-70b-versatile"
+    stop_condition: Optional[str] = "both"
+    limit_applications: Optional[int] = 10
+    limit_processed: Optional[int] = 20
 
 class SystemSettingsPayload(BaseModel):
     system_prompt: Optional[str] = None
@@ -41,11 +48,46 @@ class SystemSettingsPayload(BaseModel):
     temperature: Optional[float] = 0.2
     gemini_model: Optional[str] = None
     mistral_model: Optional[str] = None
+    openai_provider_preset: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_model: Optional[str] = None
+    openai_api_keys: Optional[str] = None
 
 class UserProfileAnswerPayload(BaseModel):
     key: str
     question_hint: str
     answer: str
+
+class ModelSyncPayload(BaseModel):
+    provider: Optional[str] = "all"
+
+class ModelSelectPayload(BaseModel):
+    provider: str
+    model_id: str
+
+class ProviderConfigPayload(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    api_keys: Optional[Any] = None  # List[str] or multiline/comma string
+    active_model: Optional[str] = None
+    temperature: Optional[float] = None
+    is_enabled: Optional[bool] = None
+    description: Optional[str] = None
+    get_key_url: Optional[str] = None
+
+class ProviderProbePayload(BaseModel):
+    api_key: Optional[str] = None
+
+class CustomProviderCreatePayload(BaseModel):
+    name: str
+    base_url: str = "http://localhost:11434/v1"
+    api_keys: Optional[Any] = []
+    active_model: Optional[str] = ""
+    temperature: Optional[float] = 0.2
+    is_enabled: Optional[bool] = True
+    description: Optional[str] = "Пользовательский OpenAI-совместимый провайдер"
+    get_key_url: Optional[str] = ""
+
 
 class QuickApplyPayload(BaseModel):
     url_or_id: str
@@ -54,6 +96,10 @@ class QuickApplyPayload(BaseModel):
 class ApplyPayload(BaseModel):
     vacancy_id: str
     resume_id: str
+    cover_letter: str
+    answers: Optional[Dict[str, Any]] = None
+
+class SaveDraftPayload(BaseModel):
     cover_letter: str
     answers: Optional[Dict[str, Any]] = None
 

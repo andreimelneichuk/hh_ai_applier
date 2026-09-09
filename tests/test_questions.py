@@ -152,7 +152,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
 
     def test_04_llm_analyzer_answer_questions(self):
         """Тестирование генерации ответов на вопросы с помощью LLMAnalyzer."""
-        analyzer = LLMAnalyzer()
+        analyzer = LLMAnalyzer(gemini_api_keys=["test_gemini_key"])
         resume_text = "Python разработчик, 5 лет опыта. Стек: FastAPI, PostgreSQL, Docker, Asyncio. Город: Пермь. ЗП: от 200 000 руб."
         vacancy = {
             "title": "Backend Python Developer",

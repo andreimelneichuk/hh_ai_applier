@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=26">
+    <link rel="stylesheet" href="/static/index.css?v=27">
 </head>
 <body>
     <div class="glass-bg"></div>
@@ -62,10 +62,19 @@
                     <div class="form-group">
                         <label for="area-select">Регион поиска</label>
                         <select id="area-select">
-                            <option value="113">Россия</option>
+                            <option value="113">Россия (вся)</option>
                             <option value="1">Москва</option>
                             <option value="2">Санкт-Петербург</option>
+                            <option value="3">Екатеринбург</option>
+                            <option value="4">Новосибирск</option>
+                            <option value="66">Нижний Новгород</option>
+                            <option value="88">Казань</option>
                             <option value="72">Пермь</option>
+                            <option value="53">Краснодар</option>
+                            <option value="104">Челябинск</option>
+                            <option value="76">Ростов-на-Дону</option>
+                            <option value="68">Самара</option>
+                            <option value="99">Воронеж</option>
                         </select>
                     </div>
 
@@ -90,7 +99,7 @@
                             <span>📋 База ответов (FAQ)</span>
                         </button>
                         <button type="button" class="btn btn-secondary" id="open-system-settings-sidebar-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
-                            <span>⚙️ Настройки LLM и промпта</span>
+                            <span>⚙️ Системные настройки LLM</span>
                         </button>
                     </div>
 
@@ -144,8 +153,12 @@
             <!-- Секция статистики и интерактивных фильтров -->
             <header class="dashboard-header">
                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                    <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                         <h2>Панель Управления</h2>
+                        <div id="dashboard-ai-status-pill" class="ai-status-pill status-unconfigured" title="Рабочий статус AI провайдеров. Нажмите для настройки">
+                            <span class="status-dot gray" id="dashboard-ai-status-dot"></span>
+                            <span id="dashboard-ai-status-text">AI: проверка...</span>
+                        </div>
                         <button type="button" id="open-system-settings-btn" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; border-color: rgba(99, 102, 241, 0.35); background: rgba(99, 102, 241, 0.15);">
                             <span>⚙️</span>
                             <span>Системные настройки (LLM & Промпт)</span>
@@ -241,12 +254,75 @@
                             </div>
                             <div>
                                 <h4>Оценка соответствия</h4>
-                                <p class="text-muted">Анализ выполнен с помощью Gemini AI</p>
+                                <p class="text-muted" id="modal-score-subtext">Многофакторная оценка ИИ</p>
+                            </div>
+                        </div>
+
+                        <!-- Блок 5 шкал соответствия (Multifactor Breakdown) -->
+                        <div id="modal-scores-breakdown-card" class="scores-breakdown-card hide">
+                            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                                <span>Шкалы оценки соответствия</span>
+                                <span id="modal-scores-total-pill" class="badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; font-size: 11px;">0 / 100</span>
+                            </div>
+
+                            <div class="score-scale-item">
+                                <div class="score-scale-header">
+                                    <span class="score-scale-name">🛠️ Стек технологий</span>
+                                    <span class="score-scale-value" id="scale-stack-val">--/30</span>
+                                </div>
+                                <div class="score-scale-track">
+                                    <div class="score-scale-fill" id="scale-stack-fill" style="width: 0%; background: #3b82f6;"></div>
+                                </div>
+                            </div>
+
+                            <div class="score-scale-item">
+                                <div class="score-scale-header">
+                                    <span class="score-scale-name">⏳ Релевантный опыт</span>
+                                    <span class="score-scale-value" id="scale-exp-val">--/25</span>
+                                </div>
+                                <div class="score-scale-track">
+                                    <div class="score-scale-fill" id="scale-exp-fill" style="width: 0%; background: #10b981;"></div>
+                                </div>
+                            </div>
+
+                            <div class="score-scale-item">
+                                <div class="score-scale-header">
+                                    <span class="score-scale-name">🎯 Грейд и уровень</span>
+                                    <span class="score-scale-value" id="scale-grade-val">--/20</span>
+                                </div>
+                                <div class="score-scale-track">
+                                    <div class="score-scale-fill" id="scale-grade-fill" style="width: 0%; background: #8b5cf6;"></div>
+                                </div>
+                            </div>
+
+                            <div class="score-scale-item">
+                                <div class="score-scale-header">
+                                    <span class="score-scale-name">🏢 Специфика домена</span>
+                                    <span class="score-scale-value" id="scale-domain-val">--/15</span>
+                                </div>
+                                <div class="score-scale-track">
+                                    <div class="score-scale-fill" id="scale-domain-fill" style="width: 0%; background: #f59e0b;"></div>
+                                </div>
+                            </div>
+
+                            <div class="score-scale-item">
+                                <div class="score-scale-header">
+                                    <span class="score-scale-name">📍 Формат и локация</span>
+                                    <span class="score-scale-value" id="scale-format-val">--/10</span>
+                                </div>
+                                <div class="score-scale-track">
+                                    <div class="score-scale-fill" id="scale-format-fill" style="width: 0%; background: #06b6d4;"></div>
+                                </div>
+                            </div>
+
+                            <div id="modal-blocker-alert" class="blocker-alert-box hide" style="margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); font-size: 11.5px; color: #fca5a5; display: flex; align-items: flex-start; gap: 6px;">
+                                <span>⛔</span>
+                                <span id="modal-blocker-text">Блокирующий фактор</span>
                             </div>
                         </div>
 
                         <div class="reasoning-box">
-                            <h4>Анализ релевантности:</h4>
+                            <h4>Анализ релевантности (Chain of Thought):</h4>
                             <p id="modal-reasoning-text">Здесь будет текст разбора...</p>
                         </div>
                     </div>
@@ -290,17 +366,17 @@
         </div>
     </div>
 
-    <!-- Модальное окно: Менеджер API Ключей (Gemini + Mistral) -->
+    <!-- Модальное окно: Менеджер API Ключей (Gemini + Mistral + OpenAI/Groq) -->
     <div id="key-manager-modal" class="modal hide" style="z-index: 1750;">
-        <div class="modal-content glass-panel" style="max-width: 680px; max-height: 85vh; padding: 24px 28px;">
+        <div class="modal-content glass-panel" style="max-width: 700px; max-height: 85vh; padding: 24px 28px;">
             <header class="modal-header" style="padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center;">
                 <div>
                     <h2 style="font-size: 18px; margin: 0; color: white; display: flex; align-items: center; gap: 8px;">
                         <span>🔑</span>
-                        <span>Менеджер API Ключей (Gemini + Mistral)</span>
+                        <span>Менеджер API Ключей (Gemini, Mistral, OpenAI/Groq)</span>
                     </h2>
                     <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary);">
-                        Пул токенов Gemini и резервных ключей Mistral AI для непрерывного анализа без сбоев (429)
+                        Пул токенов Gemini, Mistral и бесплатных провайдеров OpenAI (Groq, OpenRouter) для непрерывного анализа без сбоев (429)
                     </p>
                 </div>
                 <button type="button" class="close-btn" id="key-manager-close-btn" aria-label="Закрыть">
@@ -310,14 +386,29 @@
 
             <!-- Переключатель провайдеров (Табы) -->
             <div style="display: flex; gap: 8px; margin-top: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
-                <button type="button" id="tab-gemini-btn" class="btn" style="flex: 1; padding: 8px 12px; font-size: 13px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 8px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                <button type="button" id="tab-openai-btn" class="btn" style="flex: 1; padding: 8px 12px; font-size: 12px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 8px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    <span>⚡ OpenAI / Groq</span>
+                    <span id="openai-keys-badge" class="badge" style="background: rgba(59, 130, 246, 0.3); color: #93c5fd; font-size: 11px;">0</span>
+                </button>
+                <button type="button" id="tab-gemini-btn" class="btn" style="flex: 1; padding: 8px 12px; font-size: 12px; background: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
                     <span>🔵 Gemini API</span>
                     <span id="gemini-keys-badge" class="badge" style="background: rgba(59, 130, 246, 0.3); color: #93c5fd; font-size: 11px;">0</span>
                 </button>
-                <button type="button" id="tab-mistral-btn" class="btn" style="flex: 1; padding: 8px 12px; font-size: 13px; background: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
-                    <span>🟠 Mistral AI (Резерв)</span>
+                <button type="button" id="tab-mistral-btn" class="btn" style="flex: 1; padding: 8px 12px; font-size: 12px; background: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    <span>🟠 Mistral AI</span>
                     <span id="mistral-keys-badge" class="badge" style="background: rgba(249, 115, 22, 0.2); color: #fdba74; font-size: 11px;">0</span>
                 </button>
+            </div>
+
+            <!-- Информационная карточка вендора с прямой ссылкой на бесплатный ключ -->
+            <div id="key-vendor-banner" style="margin-top: 12px; padding: 10px 14px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                <div>
+                    <span id="key-vendor-desc" style="color: #cbd5e1;">Groq: сверхбыстрый LPU инференс Llama</span>
+                </div>
+                <a id="key-vendor-link" href="https://console.groq.com/keys" target="_blank" class="btn btn-secondary" style="text-decoration: none; font-size: 11px; padding: 5px 12px; color: #60a5fa; border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.15); white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+                    <span>Получить ключ</span>
+                    <span>↗</span>
+                </a>
             </div>
 
             <div class="modal-body" style="padding: 16px 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;">
@@ -385,71 +476,123 @@
             <div class="modal-body" style="padding: 16px 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;">
                 <!-- Вкладка 1: Модели, стратегия и ключи LLM -->
                 <div id="llm-tab-content-models">
-                    <div class="glass-panel" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); padding: 16px; border-radius: 10px; display: flex; flex-direction: column; gap: 14px;">
-                        <h4 style="margin: 0; font-size: 14px; color: white; display: flex; align-items: center; gap: 6px;">
-                            <span>⚡</span>
-                            <span>Модели по умолчанию и стратегия генерации</span>
-                        </h4>
+                    <div class="glass-panel" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); padding: 18px; border-radius: 12px; display: flex; flex-direction: column; gap: 16px;">
                         
-                        <!-- Выбор моделей Gemini и Mistral -->
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <!-- Верхняя панель: Основной провайдер, Fallback, Кнопка добавления OpenAI -->
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08);">
                             <div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                    <label for="sys-gemini-model-select" style="margin: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary);">Модель Gemini (Основная)</label>
-                                    <button type="button" id="sys-refresh-models-btn" style="background: transparent; border: none; color: var(--primary-color); font-size: 11px; cursor: pointer; text-decoration: underline;">Обновить</button>
-                                </div>
-                                <select id="sys-gemini-model-select" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
-                                    <option value="gemini-3.6-flash">gemini-3.6-flash (Рекомендуемая, быстрая)</option>
-                                    <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                                    <option value="gemini-flash-latest">gemini-flash-latest</option>
-                                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro - макс. интеллект)</option>
-                                </select>
+                                <h4 style="margin: 0; font-size: 15px; color: white; display: flex; align-items: center; gap: 7px;">
+                                    <span>⚡</span>
+                                    <span>Провайдеры нейросетей (LLM)</span>
+                                </h4>
+                                <p style="margin: 3px 0 0 0; font-size: 11.5px; color: var(--text-secondary);">
+                                    Нажмите на карточку провайдера для настройки ключей, модели и температуры
+                                </p>
                             </div>
-                            <div>
-                                <label for="sys-mistral-model-select" style="margin-bottom: 6px; display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary);">Модель Mistral (Резервная)</label>
-                                <select id="sys-mistral-model-select" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
-                                    <option value="mistral-small-latest">mistral-small-latest (Быстрая, рекомендуемая)</option>
-                                    <option value="mistral-large-latest">mistral-large-latest (Максимальное качество)</option>
-                                    <option value="open-mistral-nemo">open-mistral-nemo</option>
-                                    <option value="codestral-latest">codestral-latest (Для кода и IT)</option>
-                                </select>
+                            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                <button type="button" id="open-add-custom-provider-btn" class="btn btn-primary" style="font-size: 11.5px; padding: 6px 14px; display: flex; align-items: center; gap: 6px;">
+                                    <span>➕</span>
+                                    <span>Добавить OpenAI провайдер</span>
+                                </button>
+                                <button type="button" id="open-catalog-modal-btn" class="btn btn-secondary" style="font-size: 11.5px; padding: 6px 12px; display: flex; align-items: center; gap: 5px; color: #a5b4fc; border-color: rgba(99, 102, 241, 0.35); background: rgba(99, 102, 241, 0.12);">
+                                    <span>📋</span>
+                                    <span>Каталог моделей</span>
+                                </button>
                             </div>
                         </div>
 
-                        <!-- Провайдер и Температура -->
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <!-- Быстрые переключатели: Основной провайдер и Fallback -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: center; background: rgba(0,0,0,0.25); padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.05);">
                             <div>
-                                <label for="sys-primary-provider" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">Основной LLM провайдер</label>
-                                <select id="sys-primary-provider" style="width: 100%; padding: 8px 12px; font-size: 13px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
-                                    <option value="gemini">🔵 Gemini API (Основной, быстрый)</option>
-                                    <option value="mistral">🟠 Mistral AI (Основной, европейский)</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">
-                                    Температура генерации: <span id="sys-temp-value" style="color: #60a5fa; font-weight: 700;">0.20</span>
+                                <label for="sys-main-primary-select" style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; display: block;">
+                                    🎯 Основной рабочий провайдер:
                                 </label>
-                                <div style="display: flex; align-items: center; gap: 10px; height: 38px;">
-                                    <input type="range" id="sys-temperature" min="0" max="1" step="0.05" value="0.2" style="flex: 1; accent-color: #3b82f6;">
+                                <select id="sys-main-primary-select" style="width: 100%; box-sizing: border-box; padding: 6px 10px; font-size: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white;">
+                                    <!-- Опции провайдеров заполняются динамически -->
+                                </select>
+                            </div>
+                            <div style="display: flex; align-items: center; justify-content: space-between; padding-left: 10px; border-left: 1px solid rgba(255,255,255,0.06);">
+                                <div>
+                                    <div style="font-size: 12px; font-weight: 600; color: white;">Автоматический Fallback</div>
+                                    <div style="font-size: 10.5px; color: var(--text-secondary);">Резерв при ошибках 429 / исчерпании лимитов</div>
+                                </div>
+                                <input type="checkbox" id="sys-fallback-toggle" class="ios-toggle" checked>
+                            </div>
+                        </div>
+
+                        <!-- Сетка карточек провайдеров -->
+                        <div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">
+                                    Доступные провайдеры
+                                </span>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <button type="button" id="probe-all-providers-btn" class="btn btn-secondary" style="font-size: 11px; padding: 3px 9px; display: inline-flex; align-items: center; gap: 5px; color: #a5b4fc; border-color: rgba(99, 102, 241, 0.35); background: rgba(99, 102, 241, 0.12);" title="Проверить сетевой статус и лимиты всех настроенных провайдеров">
+                                        <span id="probe-all-icon">⚡</span>
+                                        <span>Проверить все</span>
+                                    </button>
+                                    <span id="providers-count-badge" style="font-size: 11px; color: var(--text-secondary);">
+                                        6 провайдеров
+                                    </span>
                                 </div>
                             </div>
-                        </div>
 
-                        <!-- Fallback -->
-                        <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);">
-                            <div>
-                                <div style="font-size: 13px; font-weight: 600; color: white;">Автоматический Fallback</div>
-                                <div style="font-size: 11px; color: var(--text-secondary);">При ошибках 429/исчерпании квоты основного провайдера переключаться на резервный</div>
+                            <!-- Фильтры по статусам провайдеров -->
+                            <div class="provider-filter-bar">
+                                <div class="provider-filter-pills" id="provider-status-filters">
+                                    <button type="button" class="provider-filter-pill active" data-status-filter="all">
+                                        <span>Все</span>
+                                        <span class="pill-count" id="filter-count-all">0</span>
+                                    </button>
+                                    <button type="button" class="provider-filter-pill" data-status-filter="active" title="Провайдеры с настроенными и готовыми к работе ключами">
+                                        <span class="status-dot green"></span>
+                                        <span>Активные</span>
+                                        <span class="pill-count" id="filter-count-active">0</span>
+                                    </button>
+                                    <button type="button" class="provider-filter-pill" data-status-filter="rate_limited" title="Провайдеры, у которых ключи превысили лимиты (HTTP 429)">
+                                        <span class="status-dot amber"></span>
+                                        <span>Лимит исчерпан</span>
+                                        <span class="pill-count" id="filter-count-rate-limited">0</span>
+                                    </button>
+                                    <button type="button" class="provider-filter-pill" data-status-filter="error" title="Провайдеры с ошибками проверки ключа или модели">
+                                        <span class="status-dot red"></span>
+                                        <span>Ошибки</span>
+                                        <span class="pill-count" id="filter-count-error">0</span>
+                                    </button>
+                                    <button type="button" class="provider-filter-pill" data-status-filter="unconfigured" title="Провайдеры без добавленных API ключей">
+                                        <span class="status-dot gray"></span>
+                                        <span>Не настроены</span>
+                                        <span class="pill-count" id="filter-count-unconfigured">0</span>
+                                    </button>
+                                </div>
                             </div>
-                            <input type="checkbox" id="sys-fallback-toggle" class="ios-toggle" checked>
+
+                            <div class="provider-cards-grid" id="providers-cards-grid">
+                                <!-- Карточки провайдеров генерируются динамически через JS -->
+                            </div>
                         </div>
 
-                        <!-- Кнопка Менеджера API Ключей -->
-                        <div style="padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);">
-                            <button type="button" class="btn btn-secondary" id="sys-open-key-manager-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; border-color: rgba(59, 130, 246, 0.35); background: rgba(59, 130, 246, 0.12); color: #60a5fa;">
-                                <span>🔑 Менеджер API ключей (Gemini & Mistral)</span>
-                                <span id="key-manager-badge" class="badge" style="background: rgba(59, 130, 246, 0.25); color: #60a5fa; font-size: 11px; padding: 2px 6px;">0</span>
+                        <!-- Нижняя панель действий -->
+                        <div style="padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; gap: 10px;">
+                            <button type="button" class="btn btn-secondary" id="sys-open-limits-modal-btn" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.1); color: #f87171;">
+                                <span>🛑 Лимит и условия автоостановки</span>
+                                <span id="sys-limits-badge" class="badge" style="background: rgba(239, 68, 68, 0.25); color: #fca5a5; font-size: 11px; padding: 2px 8px;">Оба: 10/20</span>
                             </button>
+                        </div>
+
+                        <!-- Скрытые элементы для обратной совместимости -->
+                        <div style="display: none;">
+                            <select id="sys-gemini-model-select"></select>
+                            <select id="sys-mistral-model-select"></select>
+                            <select id="sys-openai-preset-select"></select>
+                            <select id="sys-openai-model-select"></select>
+                            <select id="sys-primary-provider"></select>
+                            <input type="text" id="sys-openai-base-url">
+                            <input type="range" id="sys-temperature" min="0" max="1" step="0.05" value="0.2">
+                            <span id="sys-temp-value">0.20</span>
+                            <div id="sys-provider-chips"></div>
+                            <button type="button" id="sys-open-key-manager-btn"></button>
+                            <span id="key-manager-badge">0</span>
                         </div>
                     </div>
                 </div>
@@ -506,9 +649,218 @@
                 </div>
             </div>
 
-            <footer style="padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: flex-end; gap: 10px;">
-                <button type="button" id="system-settings-cancel-btn" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">Отмена</button>
-                <button type="button" id="system-settings-save-btn" class="btn btn-primary btn-glow" style="font-size: 13px; padding: 8px 24px;">Сохранить настройки</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Модальное окно: Детальная настройка провайдера -->
+    <div id="provider-detail-modal" class="modal hide" style="z-index: 1850;">
+        <div class="modal-content glass-panel" style="max-width: 680px; width: 92%; max-height: 88vh; padding: 24px 28px; display: flex; flex-direction: column;">
+            <header class="modal-header" style="padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span id="pdm-icon" style="font-size: 24px;">⚡</span>
+                    <div>
+                        <h2 id="pdm-title" style="font-size: 18px; margin: 0; color: white; display: flex; align-items: center; gap: 8px;">
+                            Настройка провайдера
+                        </h2>
+                        <div style="display: flex; align-items: center; gap: 6px; margin-top: 3px;">
+                            <span id="pdm-protocol-badge" class="glass-badge badge-def" style="font-size: 10px;">openai_compatible</span>
+                            <span id="pdm-custom-badge" class="glass-badge badge-free" style="font-size: 10px; display: none;">Кастомный</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <button type="button" id="pdm-delete-btn" class="btn btn-secondary" style="display: none; font-size: 11px; padding: 4px 10px; color: #f87171; border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.1);">
+                        <span>🗑 Удалить</span>
+                    </button>
+                    <button type="button" class="close-btn" id="pdm-close-btn" aria-label="Закрыть">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </header>
+
+            <div class="modal-body" style="padding: 16px 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; flex: 1;">
+                <!-- Индикатор рабочего статуса провайдера -->
+                <div id="pdm-status-banner" class="pdm-status-banner unconfigured">
+                    <span class="status-dot gray" id="pdm-status-dot"></span>
+                    <div style="flex: 1;">
+                        <div id="pdm-status-title" style="font-weight: 600; font-size: 12.5px;">Статус провайдера</div>
+                        <div id="pdm-status-desc" style="font-size: 11px; opacity: 0.9;">Описание статуса</div>
+                    </div>
+                </div>
+
+                <!-- Информационный баннер вендора -->
+                <div id="pdm-banner" style="padding: 10px 14px; background: rgba(59, 130, 246, 0.08); border: 1px dashed rgba(59, 130, 246, 0.25); border-radius: 8px; font-size: 11.5px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                    <div id="pdm-banner-desc" style="color: #93c5fd; font-size: 12px; line-height: 1.4;">Описание провайдера</div>
+                    <a id="pdm-get-key-link" href="#" target="_blank" class="btn btn-secondary" style="text-decoration: none; font-size: 11px; padding: 5px 12px; color: #60a5fa; border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.12); display: flex; align-items: center; gap: 4px; white-space: nowrap;">
+                        <span>🔗 Получить ключ</span>
+                        <span>↗</span>
+                    </a>
+                </div>
+
+                <!-- Статус: Включен / Выключен + Сделать основным -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <div>
+                            <div style="font-size: 12px; font-weight: 600; color: white;">Использовать в работе</div>
+                            <div style="font-size: 10.5px; color: var(--text-secondary);">Включает провайдер в пул</div>
+                        </div>
+                        <input type="checkbox" id="pdm-enabled-toggle" class="ios-toggle" checked>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding-left: 10px; border-left: 1px solid rgba(255,255,255,0.06);">
+                        <div>
+                            <div style="font-size: 12px; font-weight: 600; color: white;">Сделать основным</div>
+                            <div style="font-size: 10.5px; color: var(--text-secondary);">Первый в очереди анализа</div>
+                        </div>
+                        <input type="checkbox" id="pdm-primary-toggle" class="ios-toggle">
+                    </div>
+                </div>
+
+                <!-- Выбор модели и синхронизация -->
+                <div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <label for="pdm-model-select" style="margin: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary);">
+                            Активная модель
+                        </label>
+                        <button type="button" id="pdm-sync-models-btn" style="background: transparent; border: none; color: var(--primary-color); font-size: 11px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                            <span class="spin-icon" id="pdm-sync-icon">🔄</span>
+                            <span id="pdm-sync-btn-text">Синхронизировать с API</span>
+                        </button>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <select id="pdm-model-select" style="flex: 1; box-sizing: border-box; padding: 8px 12px; font-size: 12.5px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                            <!-- Заполняется JS -->
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Температура для этого конкретного провайдера -->
+                <div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <label for="pdm-temperature" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin: 0;">
+                            Температура генерации
+                        </label>
+                        <span id="pdm-temp-value" style="font-size: 12px; font-weight: 700; color: #60a5fa;">0.20</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="range" id="pdm-temperature" min="0" max="1" step="0.05" value="0.2" style="flex: 1; accent-color: #3b82f6;">
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-secondary); margin-top: 4px;">
+                        <span>0.0 (Точный / код)</span>
+                        <span>0.5 (Сбалансированный)</span>
+                        <span>1.0 (Креативный)</span>
+                    </div>
+                </div>
+
+                <!-- Base URL (для OpenAI / Ollama / Custom) -->
+                <div id="pdm-base-url-container">
+                    <label for="pdm-base-url-input" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; display: block;">
+                        Базовый URL эндпоинта (Base URL)
+                    </label>
+                    <input type="text" id="pdm-base-url-input" placeholder="https://api.openai.com/v1" style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                </div>
+
+                <!-- Пул API ключей для этого конкретного провайдера -->
+                <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+                        <h4 style="margin: 0; font-size: 12.5px; color: white; display: flex; align-items: center; gap: 6px;">
+                            <span>🔑</span>
+                            <span>API Ключи (<span id="pdm-keys-count">0</span>)</span>
+                        </h4>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button type="button" id="pdm-probe-all-keys-btn" class="btn btn-secondary" style="font-size: 10.5px; padding: 3px 8px; color: #34d399; border-color: rgba(52, 211, 153, 0.35); background: rgba(52, 211, 153, 0.1);" title="Проверить все ключи этого провайдера через API">
+                                <span>⚡ Проверить ключи</span>
+                            </button>
+                            <span style="font-size: 11px; color: var(--text-secondary);">Ротация и fallback при 429</span>
+                        </div>
+                    </div>
+
+                    <!-- Добавление нового ключа -->
+                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                        <input type="text" id="pdm-new-key-input" placeholder="Вставьте API-ключ..." style="flex: 1; padding: 7px 12px; font-size: 12px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                        <button type="button" id="pdm-add-key-btn" class="btn btn-primary" style="font-size: 12px; padding: 7px 14px; white-space: nowrap;">+ Добавить</button>
+                    </div>
+
+                    <!-- Список ключей -->
+                    <div id="pdm-keys-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto;">
+                        <!-- Карточки ключей генерируются через JS -->
+                    </div>
+                </div>
+            </div>
+
+            <footer style="padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" id="pdm-cancel-btn" class="btn btn-secondary" style="font-size: 12.5px; padding: 8px 16px;">Отмена</button>
+                <button type="button" id="pdm-save-btn" class="btn btn-primary btn-glow" style="font-size: 12.5px; padding: 8px 22px;">Сохранить настройки</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Модальное окно: Добавление нового кастомного OpenAI провайдера -->
+    <div id="add-custom-provider-modal" class="modal hide" style="z-index: 1900;">
+        <div class="modal-content glass-panel" style="max-width: 560px; width: 92%; max-height: 85vh; padding: 24px 28px; display: flex; flex-direction: column;">
+            <header class="modal-header" style="padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h2 style="font-size: 18px; margin: 0; color: white; display: flex; align-items: center; gap: 8px;">
+                        <span>➕</span>
+                        <span>Новый OpenAI-совместимый провайдер</span>
+                    </h2>
+                    <p style="margin: 3px 0 0 0; font-size: 11.5px; color: var(--text-secondary);">
+                        Подключите DeepSeek, Together, Ollama, LM Studio или любой vLLM эндпоинт
+                    </p>
+                </div>
+                <button type="button" class="close-btn" id="acp-close-btn" aria-label="Закрыть">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+
+            <div class="modal-body" style="padding: 16px 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; flex: 1;">
+                <div>
+                    <label for="acp-name-input" style="font-size: 12px; font-weight: 600; color: white; margin-bottom: 4px; display: block;">
+                        Название провайдера <span style="color: #ef4444;">*</span>
+                    </label>
+                    <input type="text" id="acp-name-input" placeholder="Например: DeepSeek, Together AI, Ollama" style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12.5px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                </div>
+
+                <div>
+                    <label for="acp-url-input" style="font-size: 12px; font-weight: 600; color: white; margin-bottom: 4px; display: block;">
+                        Base URL (OpenAI-совместимый) <span style="color: #ef4444;">*</span>
+                    </label>
+                    <input type="text" id="acp-url-input" placeholder="https://api.deepseek.com/v1 или http://localhost:11434/v1" style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                </div>
+
+                <div>
+                    <label for="acp-model-input" style="font-size: 12px; font-weight: 600; color: white; margin-bottom: 4px; display: block;">
+                        Имя модели по умолчанию <span style="color: #ef4444;">*</span>
+                    </label>
+                    <input type="text" id="acp-model-input" placeholder="deepseek-chat, llama3:latest, ..." style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                </div>
+
+                <div>
+                    <label for="acp-key-input" style="font-size: 12px; font-weight: 600; color: white; margin-bottom: 4px; display: block;">
+                        Начальный API-ключ (необязательно для локальных моделей)
+                    </label>
+                    <input type="text" id="acp-key-input" placeholder="sk-..." style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div>
+                        <label for="acp-temp-input" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; display: block;">
+                            Температура (0.0 - 1.0)
+                        </label>
+                        <input type="number" id="acp-temp-input" min="0" max="1" step="0.05" value="0.2" style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                    </div>
+                    <div>
+                        <label for="acp-link-input" style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; display: block;">
+                            Ссылка на получение ключа
+                        </label>
+                        <input type="text" id="acp-link-input" placeholder="https://..." style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                    </div>
+                </div>
+            </div>
+
+            <footer style="padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" id="acp-cancel-btn" class="btn btn-secondary" style="font-size: 12.5px; padding: 8px 16px;">Отмена</button>
+                <button type="button" id="acp-save-btn" class="btn btn-primary btn-glow" style="font-size: 12.5px; padding: 8px 22px;">Создать провайдер</button>
             </footer>
         </div>
     </div>
@@ -569,6 +921,123 @@
         </div>
     </div>
 
+    <!-- Модальное окно Лимитов и Автоостановки -->
+    <div id="limits-settings-modal" class="modal hide" style="z-index: 1750;">
+        <div class="modal-content glass-panel" style="max-width: 580px; width: 92%; max-height: 90vh; display: flex; flex-direction: column;">
+            <header style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div>
+                    <h3 style="margin: 0; font-size: 18px; color: white; display: flex; align-items: center; gap: 8px;">
+                        <span>🛑</span>
+                        <span>Лимит и условия автоостановки</span>
+                    </h3>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary);">
+                        Автоматическое завершение цикла пайплайна при достижении заданных лимитов
+                    </p>
+                </div>
+                <button type="button" class="btn-close" id="limits-settings-close-btn" style="background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-secondary);">&times;</button>
+            </header>
+
+            <div style="overflow-y: auto; flex: 1; padding-right: 4px; display: flex; flex-direction: column; gap: 20px;">
+                <!-- Горизонтальный выбор режима (Scroll / Card Selector) -->
+                <div>
+                    <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; display: block; text-transform: uppercase; letter-spacing: 0.05em;">
+                        Критерий остановки пайплайна
+                    </label>
+                    <div class="limit-mode-selector-scroll">
+                        <div class="limit-mode-card active" data-mode="both" id="limit-mode-card-both">
+                            <div class="limit-mode-icon">⚡</div>
+                            <div class="limit-mode-info">
+                                <div class="limit-mode-title">Оба условия</div>
+                                <div class="limit-mode-desc">Что наступит раньше: N откликов или N проверок</div>
+                            </div>
+                            <div class="limit-mode-check">✓</div>
+                        </div>
+
+                        <div class="limit-mode-card" data-mode="applications" id="limit-mode-card-apps">
+                            <div class="limit-mode-icon">📨</div>
+                            <div class="limit-mode-info">
+                                <div class="limit-mode-title">Только число откликов</div>
+                                <div class="limit-mode-desc">Остановиться строго после N успешных откликов</div>
+                            </div>
+                            <div class="limit-mode-check">✓</div>
+                        </div>
+
+                        <div class="limit-mode-card" data-mode="processed" id="limit-mode-card-proc">
+                            <div class="limit-mode-icon">🔍</div>
+                            <div class="limit-mode-info">
+                                <div class="limit-mode-title">Только число оценок</div>
+                                <div class="limit-mode-desc">Остановиться после анализа N вакансий ИИ</div>
+                            </div>
+                            <div class="limit-mode-check">✓</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Блоки полей с анимацией появления / сворачивания -->
+                <div class="limit-fields-container">
+                    <!-- Поле: Число откликов -->
+                    <div id="limit-applications-wrapper" class="animated-limit-field">
+                        <div class="limit-field-box">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <label for="modal-limit-apps-input" style="font-size: 13px; font-weight: 600; color: white; display: flex; align-items: center; gap: 6px;">
+                                    <span>📨</span> Лимит отправленных откликов (N)
+                                </label>
+                                <div style="display: flex; gap: 6px;">
+                                    <button type="button" class="preset-pill" data-target="modal-limit-apps-input" data-val="5">5</button>
+                                    <button type="button" class="preset-pill active" data-target="modal-limit-apps-input" data-val="10">10</button>
+                                    <button type="button" class="preset-pill" data-target="modal-limit-apps-input" data-val="25">25</button>
+                                    <button type="button" class="preset-pill" data-target="modal-limit-apps-input" data-val="50">50</button>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <input type="number" id="modal-limit-apps-input" min="1" max="500" value="10" class="limit-number-input">
+                                <div style="flex: 1; font-size: 12px; color: var(--text-secondary); line-height: 1.4;">
+                                    Максимальное количество откликов за один прогон сканирования.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Поле: Число оцененных вакансий -->
+                    <div id="limit-processed-wrapper" class="animated-limit-field">
+                        <div class="limit-field-box">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <label for="modal-limit-proc-input" style="font-size: 13px; font-weight: 600; color: white; display: flex; align-items: center; gap: 6px;">
+                                    <span>🔍</span> Лимит оцененных вакансий (N)
+                                </label>
+                                <div style="display: flex; gap: 6px;">
+                                    <button type="button" class="preset-pill" data-target="modal-limit-proc-input" data-val="10">10</button>
+                                    <button type="button" class="preset-pill active" data-target="modal-limit-proc-input" data-val="20">20</button>
+                                    <button type="button" class="preset-pill" data-target="modal-limit-proc-input" data-val="50">50</button>
+                                    <button type="button" class="preset-pill" data-target="modal-limit-proc-input" data-val="100">100</button>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <input type="number" id="modal-limit-proc-input" min="1" max="1000" value="20" class="limit-number-input">
+                                <div style="flex: 1; font-size: 12px; color: var(--text-secondary); line-height: 1.4;">
+                                    Общее число вакансий из выдачи HH, которые будут проанализированы ИИ.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Информационная плашка живого предпросмотра -->
+                <div class="limit-summary-card" id="modal-limit-summary-box">
+                    <div style="font-size: 16px; margin-top: 1px;">💡</div>
+                    <div style="font-size: 12px; line-height: 1.5; color: #cbd5e1;" id="modal-limit-summary-text">
+                        Пайплайн остановится после 10 откликов или 20 оценок (что наступит быстрее).
+                    </div>
+                </div>
+            </div>
+
+            <footer style="margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center;">
+                <button type="button" id="limits-settings-cancel-btn" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">Отмена</button>
+                <button type="button" id="limits-settings-save-btn" class="btn btn-primary" style="font-size: 13px; padding: 8px 20px; background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); border: none;">Сохранить лимиты</button>
+            </footer>
+        </div>
+    </div>
+
     <!-- Модальное окно подтверждения (кастомный confirm) -->
     <div id="confirm-modal" class="modal hide" style="z-index: 2000;">
         <div class="modal-content glass-panel" style="max-width: 400px; padding: 24px; text-align: center;">
@@ -581,9 +1050,61 @@
         </div>
     </div>
 
+    <!-- Модальное окно: Каталог моделей LLM -->
+    <div id="models-catalog-modal" class="modal hide" style="z-index: 1800;">
+        <div class="modal-content glass-panel" style="max-width: 880px; width: 92%; max-height: 88vh; padding: 24px 28px; display: flex; flex-direction: column;">
+            <header class="modal-header" style="padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h2 style="font-size: 18px; margin: 0; color: white; display: flex; align-items: center; gap: 8px;">
+                        <span>📋</span>
+                        <span>Каталог моделей LLM</span>
+                    </h2>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary);">
+                        Актуальные модели провайдеров из базы данных с поддержкой динамической синхронизации через API
+                    </p>
+                </div>
+                <button type="button" class="close-btn" id="models-catalog-close-btn" aria-label="Закрыть">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </header>
+
+            <!-- Фильтры и поиск каталога -->
+            <div style="padding: 14px 0 10px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <div style="flex: 1; position: relative;">
+                        <input type="text" id="catalog-search-input" placeholder="🔎 Поиск модели по названию, контексту или тегам..." style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 12.5px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                    </div>
+                    <button type="button" id="catalog-sync-all-btn" class="btn btn-secondary" style="font-size: 12px; padding: 8px 14px; display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                        <span class="spin-icon" id="catalog-sync-icon">🔄</span>
+                        <span id="catalog-sync-btn-text">Синхронизировать всё</span>
+                    </button>
+                </div>
+
+                <!-- Табы провайдеров в каталоге -->
+                <div id="catalog-provider-tabs" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                    <!-- Табы фильтрации провайдеров -->
+                </div>
+            </div>
+
+            <!-- Сетка карточек моделей -->
+            <div class="modal-body" style="padding: 16px 0; overflow-y: auto; flex: 1;">
+                <div id="models-catalog-grid" class="models-catalog-grid">
+                    <!-- Карточки моделей -->
+                </div>
+            </div>
+
+            <footer style="padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-size: 11.5px; color: var(--text-secondary);" id="catalog-stats-info">
+                    Показано: 0 моделей
+                </div>
+                <button type="button" id="models-catalog-done-btn" class="btn btn-primary" style="font-size: 13px; padding: 8px 20px;">Готово</button>
+            </footer>
+        </div>
+    </div>
+
     <!-- Контейнер для Toast-уведомлений -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/index.js?v=26"></script>
+    <script src="/static/index.js?v=35"></script>
 </body>
 </html>

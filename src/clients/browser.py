@@ -3,14 +3,14 @@ import re
 import logging
 import time
 import threading
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from playwright.sync_api import sync_playwright
 from src.core.paths import get_app_data_dir
 
 logger = logging.getLogger("HHBrowserClient")
 
 class HHBrowserClient:
-    _lock = threading.Lock()
+    _lock = threading.RLock()
 
     def __init__(self, user_data_dir: str = None):
         if not user_data_dir or user_data_dir == "playwright_session":
@@ -288,6 +288,80 @@ class HHBrowserClient:
             return resumes
 
     _resumes_cache: Dict[str, Dict[str, Any]] = {}
+    _applicant_profile_cache: Optional[Dict[str, str]] = None
+
+    def get_applicant_profile(self) -> Dict[str, str]:
+        """Получает точные персональные данные (имя, фамилия, пол) со страницы профиля /applicant/profile/me."""
+        if HHBrowserClient._applicant_profile_cache:
+            return HHBrowserClient._applicant_profile_cache
+        try:
+            with self._lock:
+                self._ensure_started()
+                page = self.context.new_page()
+                page.goto("https://hh.ru/applicant/profile/me", timeout=25000)
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(1000)
+
+                first_name = ""
+                last_name = ""
+                full_name = ""
+                gender = ""
+
+                fn_elem = page.query_selector('[data-qa="applicant-profile-common-firstname"]')
+                if fn_elem:
+                    first_name = fn_elem.text_content().strip()
+                ln_elem = page.query_selector('[data-qa="applicant-profile-common-lastname"]')
+                if ln_elem:
+                    last_name = ln_elem.text_content().strip()
+                name_elem = page.query_selector('[data-qa="applicant-profile-common-name"], h1[data-qa="title"]')
+                if name_elem:
+                    full_name = name_elem.text_content().strip()
+
+                if not first_name and full_name:
+                    parts = full_name.split()
+                    if len(parts) >= 2:
+                        first_name = parts[0]
+                        last_name = parts[1]
+                    elif len(parts) == 1:
+                        first_name = parts[0]
+
+                raw_body = ""
+                try:
+                    raw_body = page.locator("body").inner_text()
+                except Exception:
+                    pass
+
+                if re.search(r'\b(женщин[аы]|женский)\b', raw_body, re.I):
+                    gender = "Женский"
+                elif re.search(r'\b(мужчин[аы]|мужской)\b', raw_body, re.I):
+                    gender = "Мужской"
+
+                page.close()
+
+                result = {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "full_name": full_name or f"{first_name} {last_name}".strip(),
+                    "gender": gender
+                }
+                if first_name:
+                    HHBrowserClient._applicant_profile_cache = result
+                    try:
+                        from src.db import database
+                        database.set_user_profile_answer("candidate_name", "Имя соискателя", result["full_name"])
+                        if gender:
+                            database.set_user_profile_answer("candidate_gender", "Пол соискателя", gender)
+                    except Exception:
+                        pass
+                return result
+        except Exception as e:
+            logger.warning(f"Не удалось получить профиль /applicant/profile/me: {e}")
+            if 'page' in locals() and not page.is_closed():
+                page.close()
+            return {"first_name": "", "last_name": "", "full_name": "", "gender": ""}
 
     def get_resume(self, resume_id: str) -> Dict[str, Any]:
         """Получает детали конкретного резюме, открывая страницу его просмотра (кешируется на сессию)."""
@@ -433,12 +507,66 @@ class HHBrowserClient:
                             if clean_c and not clean_c.lower().startswith("готов") and not clean_c.lower().startswith("командировк"):
                                 relocation_cities.append(clean_c)
 
+                # Пол кандидата (Мужской / Женский)
+                gender = None
+                gender_elem = page.query_selector('[data-qa="resume-personal-gender-age"], [data-qa="resume-personal-gender"]')
+                if gender_elem:
+                    g_text = gender_elem.text_content().strip()
+                    if re.search(r'\b(женщин[аы]|женский)\b', g_text, re.I):
+                        gender = "Женский"
+                    elif re.search(r'\b(мужчин[аы]|мужской)\b', g_text, re.I):
+                        gender = "Мужской"
+                if not gender and raw_text:
+                    if re.search(r'\b(женщин[аы]|женский\s+пол)\b', raw_text, re.I):
+                        gender = "Женский"
+                    elif re.search(r'\b(мужчин[аы]|мужской\s+пол)\b', raw_text, re.I):
+                        gender = "Мужской"
+
                 # Имя кандидата
-                name_elem = page.query_selector('[data-qa="resume-personal-name"]')
-                full_name = name_elem.text_content().strip() if name_elem else "Кандидат"
+                name_elem = page.query_selector(
+                    '[data-qa="resume-personal-name"], '
+                    '.resume-header-name, '
+                    '[data-qa="resume-personal-fio"], '
+                    '[data-qa="mainmenu_applicantProfile"], '
+                    '.applicant-name'
+                )
+                extracted_name = name_elem.text_content().strip() if name_elem else ""
                 
+                # Если на странице резюме имя не найдено селектором или является стоп-словом, берем из официального профиля соискателя
+                stop_names = ("кандидат", "candidate", "понятно", "пермь", "москва", "россия", "специалист")
+                if not extracted_name or any(w in extracted_name.lower() for w in stop_names):
+                    prof = self.get_applicant_profile()
+                    if prof.get("full_name"):
+                        extracted_name = prof["full_name"]
+                    elif prof.get("first_name"):
+                        extracted_name = prof["first_name"]
+                    if not gender and prof.get("gender"):
+                        gender = prof["gender"]
+
+                # Дополнительный фолбек: сохраненные настройки профиля из БД
+                if not extracted_name or any(w in extracted_name.lower() for w in stop_names):
+                    try:
+                        from src.db import database
+                        for item in database.get_user_profile_answers():
+                            if item.get("key") == "candidate_name" and item.get("answer"):
+                                extracted_name = item.get("answer").strip()
+                                break
+                    except Exception:
+                        pass
+
+                if not gender:
+                    try:
+                        from src.db import database
+                        for item in database.get_user_profile_answers():
+                            if item.get("key") == "candidate_gender" and item.get("answer"):
+                                gender = item.get("answer").strip()
+                                break
+                    except Exception:
+                        pass
+
+                full_name = extracted_name or ""
                 name_parts = full_name.split()
-                first_name = name_parts[0] if len(name_parts) > 0 else full_name
+                first_name = name_parts[0] if len(name_parts) > 0 else ""
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
                 middle_name = " ".join(name_parts[2:]) if len(name_parts) > 2 else ""
 
@@ -447,6 +575,7 @@ class HHBrowserClient:
                     "first_name": first_name,
                     "middle_name": middle_name,
                     "last_name": last_name,
+                    "gender": gender,
                     "title": title,
                     "skills": skills,
                     "key_skills": key_skills,

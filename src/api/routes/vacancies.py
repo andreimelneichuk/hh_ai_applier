@@ -10,6 +10,7 @@ from src.pipeline.runner import format_hh_resume_to_text, load_resume_text
 from src.api.state import (
     ApplyPayload,
     QuickApplyPayload,
+    SaveDraftPayload,
     pipeline_status,
     run_in_clean_thread
 )
@@ -88,7 +89,10 @@ def get_jobs(status: str = "all", limit: int = 50, offset: int = 0):
             "questions_data": r[7] if len(r) > 7 else None,
             "applied_resume_id": r[8] if len(r) > 8 else None,
             "applied_resume_title": r[9] if len(r) > 9 else None,
-            "processed_at": r[10] if len(r) > 10 else (r[8] if len(r) > 8 else "")
+            "processed_at": r[10] if len(r) > 10 else "",
+            "scores_data": r[11] if len(r) > 11 else None,
+            "analyzed_by_provider": r[12] if len(r) > 12 else None,
+            "analyzed_by_model": r[13] if len(r) > 13 else None
         })
         
     stats = database.get_all_counts()
@@ -195,12 +199,21 @@ async def quick_apply(payload: QuickApplyPayload):
             
             chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
             chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
+            chosen_resume_text = next((r.get("text", "") for r in candidate_resumes if r.get("id") == chosen_resume_id), candidate_resumes[0].get("text", ""))
             cover_letter = analysis.cover_letter
             if not cover_letter or not cover_letter.strip():
                 cover_letter = analyzer.generate_cover_letter(chosen_resume_text, details, resumes=candidate_resumes)
             postfix = database.get_system_setting("cover_letter_postfix") or ""
             if postfix and postfix.strip() and not cover_letter.endswith(postfix.strip()):
                 cover_letter = f"{cover_letter.strip()}\n\n{postfix.strip()}"
+
+            scores_json_str = None
+            scores_dict = None
+            if analysis.scores:
+                scores_dict = analysis.scores.model_dump()
+                scores_dict["has_hard_blocker"] = analysis.has_hard_blocker
+                scores_dict["blocker_reason"] = analysis.blocker_reason
+                scores_json_str = json.dumps(scores_dict, ensure_ascii=False)
 
             questions = hh_client.get_vacancy_questions(vacancy_id)
             questions_data_str = None
@@ -234,7 +247,10 @@ async def quick_apply(payload: QuickApplyPayload):
                     cover_letter=cover_letter,
                     questions_data=questions_data_str,
                     applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title
+                    applied_resume_title=chosen_resume_title,
+                    scores_data=scores_json_str,
+                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
                 )
                 return {
                     "status": "needs_answers",
@@ -262,7 +278,10 @@ async def quick_apply(payload: QuickApplyPayload):
                     cover_letter=cover_letter,
                     questions_data=questions_data_str,
                     applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title
+                    applied_resume_title=chosen_resume_title,
+                    scores_data=scores_json_str,
+                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
                 )
                 return {
                     "status": "dry_run",
@@ -275,6 +294,7 @@ async def quick_apply(payload: QuickApplyPayload):
                     "questions_data": q_answers_list,
                     "applied_resume_id": chosen_resume_id,
                     "applied_resume_title": chosen_resume_title,
+                    "scores_data": scores_dict,
                     "message": f"[Тестовый режим Dry Run] Отклик сформирован для резюме '{chosen_resume_title}' и сохранен."
                 }
             else:
@@ -301,7 +321,10 @@ async def quick_apply(payload: QuickApplyPayload):
                     cover_letter=cover_letter,
                     questions_data=questions_data_str,
                     applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title
+                    applied_resume_title=chosen_resume_title,
+                    scores_data=scores_json_str,
+                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
                 )
 
                 if not success:
@@ -317,6 +340,7 @@ async def quick_apply(payload: QuickApplyPayload):
                     "questions_data": q_answers_list,
                     "applied_resume_id": chosen_resume_id,
                     "applied_resume_title": chosen_resume_title,
+                    "scores_data": scores_dict,
                     "message": f"Отклик с резюме '{chosen_resume_title}' и ответы успешно отправлены работодателю!"
                 }
         except Exception as e:
@@ -362,16 +386,26 @@ async def reanalyze_vacancy(vacancy_id: str):
                 logger.error(f"Не удалось получить детали вакансии {vacancy_id}")
                 return {"status": "error", "message": "Не удалось получить детали вакансии с hh.ru"}
             
+            target_threshold_str = database.get_config_value("match_threshold")
+            target_threshold = int(target_threshold_str) if target_threshold_str else Config.MATCH_THRESHOLD
+
             analyzer = LLMAnalyzer()
             analysis = analyzer.analyze_vacancy(
                 resumes=candidate_resumes,
                 vacancy=vacancy_details,
-                threshold=Config.MATCH_THRESHOLD
+                threshold=target_threshold
             )
             
             chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
             chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
             chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"])
+
+            scores_json_str = None
+            if analysis.scores:
+                scores_payload = analysis.scores.model_dump()
+                scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
+                scores_payload["blocker_reason"] = analysis.blocker_reason
+                scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
 
             dry_run_val = database.get_config_value("dry_run")
             is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
@@ -380,7 +414,9 @@ async def reanalyze_vacancy(vacancy_id: str):
             answers_dict = None
             needs_user_answers = False
 
-            if analysis.is_match:
+            is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
+
+            if is_eligible:
                 questions = hh_client.get_vacancy_questions(vacancy_id)
                 if questions and isinstance(questions, list) and len(questions) > 0:
                     user_saved_answers = database.get_user_profile_answers()
@@ -421,7 +457,10 @@ async def reanalyze_vacancy(vacancy_id: str):
                 cover_letter=analysis.cover_letter,
                 questions_data=questions_data_str,
                 applied_resume_id=chosen_resume_id,
-                applied_resume_title=chosen_resume_title
+                applied_resume_title=chosen_resume_title,
+                scores_data=scores_json_str,
+                analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
             )
             logger.info(f"Переоценка вакансии {vacancy_id}: статус={status}, score={analysis.match_score}, резюме={chosen_resume_title}")
             return {"status": "ok", "new_status": status, "score": analysis.match_score, "resume": chosen_resume_title}
@@ -504,6 +543,20 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
         raise HTTPException(status_code=500, detail=result.get("message", "Ошибка генерации письма"))
     return result
 
+@router.post("/api/vacancies/{vacancy_id}/save-draft")
+def save_vacancy_draft(vacancy_id: str, payload: SaveDraftPayload):
+    """Сохраняет отредактированное пользователем сопроводительное письмо и ответы в БД как черновик."""
+    import sqlite3
+    conn = sqlite3.connect(database.DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE processed_vacancies SET cover_letter = ? WHERE id = ?",
+        (payload.cover_letter, vacancy_id)
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
 @router.post("/api/reanalyze-all-failed")
 def reanalyze_all_failed(background_tasks: BackgroundTasks):
     """Повторный анализ всех вакансий с ошибками по очереди в фоне."""
@@ -567,15 +620,25 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                         stopped_by_user = True
                         break
 
+                    target_threshold_str = database.get_config_value("match_threshold")
+                    target_threshold = int(target_threshold_str) if target_threshold_str else Config.MATCH_THRESHOLD
+
                     analysis = analyzer.analyze_vacancy(
                         resumes=candidate_resumes,
                         vacancy=vacancy_details,
-                        threshold=Config.MATCH_THRESHOLD
+                        threshold=target_threshold
                     )
                     
                     chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
                     chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
                     chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"])
+
+                    scores_json_str = None
+                    if analysis.scores:
+                        scores_payload = analysis.scores.model_dump()
+                        scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
+                        scores_payload["blocker_reason"] = analysis.blocker_reason
+                        scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
 
                     dry_run_val = database.get_config_value("dry_run")
                     is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
@@ -584,7 +647,9 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                     answers_dict = None
                     needs_user_answers = False
 
-                    if analysis.is_match:
+                    is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
+
+                    if is_eligible:
                         questions = hh_client.get_vacancy_questions(vacancy_id)
                         if questions and isinstance(questions, list) and len(questions) > 0:
                             q_res = analyzer.answer_questions(chosen_resume_text, vacancy_details, questions, user_saved_answers)
@@ -626,11 +691,14 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                         cover_letter=analysis.cover_letter,
                         questions_data=questions_data_str,
                         applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title
+                        applied_resume_title=chosen_resume_title,
+                        scores_data=scores_json_str,
+                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
                     )
                     
                     stats["processed"] += 1
-                    if analysis.is_match:
+                    if is_eligible:
                         stats["matched"] += 1
                 except QuotaExceededError as qe:
                     logger.error(f"Превышена квота запросов к Gemini API (429) при переоценке: {qe}")

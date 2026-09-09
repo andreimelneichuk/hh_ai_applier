@@ -69,9 +69,43 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
     parts = []
     
     # ФИО и заголовок
-    name = f"{resume_data.get('first_name', '')} {resume_data.get('middle_name', '')} {resume_data.get('last_name', '')}".strip()
-    title = resume_data.get('title', 'Специалист')
-    parts.append(f"ФИО: {name}")
+    from unittest.mock import MagicMock
+    raw_first = resume_data.get('first_name')
+    first = str(raw_first).strip() if (raw_first is not None and not isinstance(raw_first, MagicMock)) else ""
+    raw_last = resume_data.get('last_name')
+    last = str(raw_last).strip() if (raw_last is not None and not isinstance(raw_last, MagicMock)) else ""
+    raw_middle = resume_data.get('middle_name')
+    middle = str(raw_middle).strip() if (raw_middle is not None and not isinstance(raw_middle, MagicMock)) else ""
+    name = " ".join(p for p in [first, middle, last] if p)
+    if not name or name.lower() in ("кандидат", "candidate"):
+        try:
+            from src.db import database
+            for item in database.get_user_profile_answers():
+                if item.get("key") == "candidate_name" and item.get("answer"):
+                    name = item.get("answer").strip()
+                    break
+        except Exception:
+            pass
+
+    if name:
+        parts.append(f"ФИО: {name}")
+
+    gender = resume_data.get('gender')
+    if not gender or isinstance(gender, MagicMock):
+        try:
+            from src.db import database
+            for item in database.get_user_profile_answers():
+                if item.get("key") == "candidate_gender" and item.get("answer"):
+                    gender = item.get("answer").strip()
+                    break
+        except Exception:
+            gender = None
+
+    if gender:
+        parts.append(f"Пол: {gender}")
+
+    raw_title = resume_data.get('title')
+    title = str(raw_title).strip() if (raw_title is not None and not isinstance(raw_title, MagicMock)) else 'Специалист'
     parts.append(f"Желаемая должность: {title}")
 
     total_exp = resume_data.get('total_experience')
@@ -165,6 +199,8 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
 def run_pipeline(queries: List[str] = None, area_id: str = None, 
                  threshold: int = None, resume_id: str = None, 
                  dry_run: bool = None, max_process: int = 10,
+                 stop_condition: str = None, limit_applications: int = None,
+                 limit_processed: int = None,
                  on_step_change = None, should_stop = None) -> Dict[str, Any]:
     """
     Запускает конвейер поиска, анализа и отправки откликов через браузерную автоматизацию.
@@ -176,6 +212,31 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
     target_area = area_id if area_id is not None else Config.SEARCH_AREA
     target_threshold = threshold if threshold is not None else Config.MATCH_THRESHOLD
     target_dry_run = dry_run if dry_run is not None else Config.DRY_RUN
+
+    # Условия автоостановки
+    target_stop_condition = (stop_condition or database.get_config_value("stop_condition") or "both").lower()
+    
+    if limit_applications is not None:
+        target_limit_apps = limit_applications
+    else:
+        db_limit_apps = database.get_config_value("limit_applications")
+        try:
+            target_limit_apps = int(db_limit_apps) if db_limit_apps is not None else 10
+        except ValueError:
+            target_limit_apps = 10
+
+    if limit_processed is not None:
+        target_limit_proc = limit_processed
+    elif max_process is not None and max_process != 10:
+        target_limit_proc = max_process
+    else:
+        db_limit_proc = database.get_config_value("limit_processed")
+        try:
+            target_limit_proc = int(db_limit_proc) if db_limit_proc is not None else (max_process or 20)
+        except ValueError:
+            target_limit_proc = max_process or 20
+    
+    logger.info(f"Параметры автоостановки: критерий '{target_stop_condition}', лимит откликов: {target_limit_apps}, лимит оценок: {target_limit_proc}")
     
     # 2. Инициализация БД
     database.init_db()
@@ -218,8 +279,11 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                 if r_text:
                     candidate_resumes.append({
                         "id": r_id,
-                        "title": r.get("title") or r_data.get("title") or "Резюме",
-                        "text": r_text
+                        "title": r.get("title") or (r_data.get("title") if r_data else "Резюме"),
+                        "text": r_text,
+                        "first_name": (r_data.get("first_name") if r_data else None) or r.get("first_name"),
+                        "last_name": (r_data.get("last_name") if r_data else None) or r.get("last_name"),
+                        "gender": (r_data.get("gender") if r_data else None) or r.get("gender"),
                     })
             if candidate_resumes:
                 logger.info(f"Успешно загружено {len(candidate_resumes)} резюме пользователя для сравнительного анализа.")
@@ -231,7 +295,10 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                 candidate_resumes.append({
                     "id": target_resume_id,
                     "title": resume_data.get("title") or "Резюме",
-                    "text": r_text
+                    "text": r_text,
+                    "first_name": resume_data.get("first_name"),
+                    "last_name": resume_data.get("last_name"),
+                    "gender": resume_data.get("gender"),
                 })
                 logger.info(f"Резюме '{resume_data.get('title')}' успешно загружено.")
             else:
@@ -322,8 +389,27 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                     stats["already_known"] += 1
                     continue
                     
-                if stats["processed"] >= max_process:
-                    logger.info(f"Достигнут лимит в {max_process} новых вакансий за один запуск. Прерываем обработку остальных.")
+                # Проверка лимитов остановки перед обработкой следующей вакансии
+                stop_by_processed = (
+                    target_stop_condition in ("processed", "both")
+                    and target_limit_proc > 0
+                    and stats["processed"] >= target_limit_proc
+                )
+                effective_applied = stats["applied"] if not target_dry_run else stats["matched"]
+                stop_by_applied = (
+                    target_stop_condition in ("applications", "both")
+                    and target_limit_apps > 0
+                    and effective_applied >= target_limit_apps
+                )
+
+                if stop_by_processed:
+                    logger.info(f"🛑 Достигнут лимит оценки вакансий ({stats['processed']} из {target_limit_proc}). Автоостановка конвейера.")
+                    stats["stopped_reason"] = "limit_processed"
+                    break
+
+                if stop_by_applied:
+                    logger.info(f"🛑 Достигнут лимит откликов ({effective_applied} из {target_limit_apps}). Автоостановка конвейера.")
+                    stats["stopped_reason"] = "limit_applications"
                     break
                     
                 # Мгновенная проверка остановки пользователем
@@ -408,9 +494,21 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                 # Находим текст выбранного резюме для возможных ответов на вопросы
                 chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"] if candidate_resumes else "")
 
-                if analysis.is_match:
+                # Сериализуем данные по 5 шкалам для сохранения в БД и отображения в UI
+                scores_json_str = None
+                if analysis.scores:
+                    import json
+                    scores_payload = analysis.scores.model_dump()
+                    scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
+                    scores_payload["blocker_reason"] = analysis.blocker_reason
+                    scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
+
+                # Строгая проверка порога и отсутствия блокирующих факторов
+                is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
+
+                if is_eligible:
                     stats["matched"] += 1
-                    logger.info(f"ВАКАНСИЯ ПОДХОДИТ! Совпадение: {analysis.match_score}%. Выбранное резюме: '{chosen_resume_title}' (ID: {chosen_resume_id})")
+                    logger.info(f"ВАКАНСИЯ ПОДХОДИТ! Совпадение: {analysis.match_score}% (порог: {target_threshold}%). Выбранное резюме: '{chosen_resume_title}' (ID: {chosen_resume_id})")
                     logger.info(f"Причина: {analysis.reasoning}")
                     
                     # Проверяем остановку перед откликом
@@ -456,7 +554,8 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                                 cover_letter=analysis.cover_letter,
                                 questions_data=questions_data_str,
                                 applied_resume_id=chosen_resume_id,
-                                applied_resume_title=chosen_resume_title
+                                applied_resume_title=chosen_resume_title,
+                                scores_data=scores_json_str
                             )
                             stats["failed"] += 1
                             continue
@@ -492,11 +591,15 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                         cover_letter=analysis.cover_letter,
                         questions_data=questions_data_str,
                         applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title
+                        applied_resume_title=chosen_resume_title,
+                        scores_data=scores_json_str,
+                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
                     )
                 else:
                     stats["ignored"] += 1
-                    logger.info(f"Вакансию пропускаем. Совпадение: {analysis.match_score}%. Резюме: {chosen_resume_title}")
+                    blocker_msg = f" [Блокер: {analysis.blocker_reason}]" if analysis.has_hard_blocker and analysis.blocker_reason else ""
+                    logger.info(f"Вакансию пропускаем. Совпадение: {analysis.match_score}% (порог: {target_threshold}%){blocker_msg}. Резюме: {chosen_resume_title}")
                     logger.info(f"Причина отсева: {analysis.reasoning}")
                     
                     database.save_vacancy(
@@ -508,8 +611,27 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                         analysis_reason=analysis.reasoning,
                         cover_letter="",
                         applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title
+                        applied_resume_title=chosen_resume_title,
+                        scores_data=scores_json_str,
+                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
                     )
+
+                # Проверка достижения лимитов сразу после завершения обработки вакансии
+                effective_applied = stats["applied"] if not target_dry_run else stats["matched"]
+                if (target_stop_condition in ("applications", "both") 
+                        and target_limit_apps > 0 
+                        and effective_applied >= target_limit_apps):
+                    logger.info(f"🛑 Достигнут лимит откликов ({effective_applied} из {target_limit_apps}). Автоостановка конвейера.")
+                    stats["stopped_reason"] = "limit_applications"
+                    break
+
+                if (target_stop_condition in ("processed", "both") 
+                        and target_limit_proc > 0 
+                        and stats["processed"] >= target_limit_proc):
+                    logger.info(f"🛑 Достигнут лимит оценки вакансий ({stats['processed']} из {target_limit_proc}). Автоостановка конвейера.")
+                    stats["stopped_reason"] = "limit_processed"
+                    break
                 
         # 6. Итоговый отчет
         logger.info("\n=== РАБОТА СЕРВИСА ЗАВЕРШЕНА ===")

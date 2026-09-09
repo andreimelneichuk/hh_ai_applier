@@ -9,7 +9,8 @@ import src.api.state as state
 logger = logging.getLogger("PipelineRoutes")
 router = APIRouter(tags=["Pipeline"])
 
-def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_id: str, dry_run: bool):
+def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_id: str, dry_run: bool,
+                      stop_condition: str = None, limit_applications: int = None, limit_processed: int = None):
     """Фоновая задача выполнения сканирования."""
     state.pipeline_status["is_running"] = True
     state.pipeline_status["stop_requested"] = False
@@ -27,6 +28,9 @@ def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_i
             threshold=threshold,
             resume_id=resume_id,
             dry_run=dry_run,
+            stop_condition=stop_condition,
+            limit_applications=limit_applications,
+            limit_processed=limit_processed,
             on_step_change=on_step,
             should_stop=lambda: state.pipeline_status.get("stop_requested", False)
         )
@@ -55,7 +59,10 @@ def trigger_search(background_tasks: BackgroundTasks):
         area_id=settings["area_id"],
         threshold=settings["threshold"],
         resume_id=settings["resume_id"],
-        dry_run=settings["dry_run"]
+        dry_run=settings["dry_run"],
+        stop_condition=settings.get("stop_condition"),
+        limit_applications=settings.get("limit_applications"),
+        limit_processed=settings.get("limit_processed")
     )
     return {"status": "started"}
 

@@ -21,7 +21,15 @@ class Config:
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "").strip()
     mistral_keys_env = os.getenv("MISTRAL_API_KEYS", "") or MISTRAL_API_KEY
     MISTRAL_API_KEYS = [k.strip() for k in re.split(r'[,\n;]+', mistral_keys_env) if k.strip() and "your_mistral_api_key" not in k.lower()]
-    MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small-latest").strip()
+    MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "open-mistral-nemo").strip()
+    
+    # OpenAI-совместимый провайдер (Groq, OpenRouter, GitHub Models, Cerebras, Ollama и др.)
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+    openai_keys_env = os.getenv("OPENAI_API_KEYS", "") or OPENAI_API_KEY
+    OPENAI_API_KEYS = [k.strip() for k in re.split(r'[,\n;]+', openai_keys_env) if k.strip() and "your_openai_api_key" not in k.lower()]
+    OPENAI_PROVIDER_PRESET = os.getenv("OPENAI_PROVIDER_PRESET", "groq").strip()
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1").strip()
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "llama-3.3-70b-versatile").strip()
     
     HH_CLIENT_ID = os.getenv("HH_CLIENT_ID", "").strip()
     HH_CLIENT_SECRET = os.getenv("HH_CLIENT_SECRET", "").strip()
@@ -49,6 +57,7 @@ class Config:
         warnings = []
         has_gemini = bool(cls.GEMINI_API_KEYS or (cls.GEMINI_API_KEY and "your_gemini_api_key" not in cls.GEMINI_API_KEY.lower()))
         has_mistral = bool(cls.MISTRAL_API_KEYS or (cls.MISTRAL_API_KEY and "your_mistral_api_key" not in cls.MISTRAL_API_KEY.lower()))
-        if not has_gemini and not has_mistral:
-            warnings.append("Внимание: Ни GEMINI_API_KEY, ни MISTRAL_API_KEY не установлены! Анализ LLM не будет работать.")
+        has_openai = bool(cls.OPENAI_API_KEYS or (cls.OPENAI_API_KEY and "your_openai_api_key" not in cls.OPENAI_API_KEY.lower()))
+        if not has_gemini and not has_mistral and not has_openai:
+            warnings.append("Внимание: Ни один провайдер LLM (Gemini, Mistral, OpenAI/Groq) не настроен! Анализ LLM не будет работать.")
         return warnings
