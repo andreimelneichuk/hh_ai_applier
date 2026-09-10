@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/andreimelneichuk/hh_ai_applier/releases"><img src="https://img.shields.io/github/v/release/andreimelneichuk/hh_ai_applier?color=blue&label=Release" alt="GitHub Release"></a>
   <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Version">
   <img src="https://img.shields.io/badge/FastAPI-0.110+-green.svg" alt="FastAPI">
   <img src="https://img.shields.io/badge/Playwright-1.42+-orange.svg" alt="Playwright">
@@ -75,7 +76,17 @@ hh_job_applier/
 
 ## 📦 Установка и запуск
 
-### Требования
+### 📥 Готовые сборки (Desktop App)
+> [!TIP]
+> Для быстрого старта без установки Python и компиляции скачайте готовый архив для вашей системы со страницы **[GitHub Releases](https://github.com/andreimelneichuk/hh_ai_applier/releases/latest)**:
+> - **Windows**: `HH_AI_Applier_Windows.zip` (распакуйте и запустите `HH_AI_Applier.exe`)
+> - **macOS**: `HH_AI_Applier_macOS.zip` (распакуйте и запустите `HH_AI_Applier.app`)
+
+---
+
+### Установка из исходного кода
+
+#### Требования
 - **Python 3.11+**
 - Установленный браузер **Google Chrome** или **Microsoft Edge**
 
