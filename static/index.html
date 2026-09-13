@@ -609,10 +609,16 @@
                                 Правила отбора вакансий, границы грейдов (Junior/Senior), учет стажа в годах, локация/часы и текст отклика
                             </p>
                         </div>
-                        <button type="button" id="sys-reset-prompt-btn" class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px; display: flex; align-items: center; gap: 4px;">
-                            <span>↺</span>
-                            <span>Сбросить к заводскому</span>
-                        </button>
+                        <div style="display: flex; gap: 8px;">
+                            <button type="button" id="sys-reset-prompt-btn" class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px; display: flex; align-items: center; gap: 4px;">
+                                <span>↺</span>
+                                <span>Сбросить к заводскому</span>
+                            </button>
+                            <button type="button" id="sys-quick-save-prompt-btn" class="btn btn-primary btn-glow" style="font-size: 11px; padding: 5px 14px; display: flex; align-items: center; gap: 5px;" title="Сохранить промпт и постфикс (Ctrl+S / Cmd+S)">
+                                <span>💾</span>
+                                <span>Сохранить</span>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Чипы переменных для быстрой вставки -->
@@ -649,6 +655,9 @@
                 </div>
             </div>
 
+            <footer style="padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px;">
+                <button type="button" id="system-settings-cancel-btn" class="btn btn-secondary" style="font-size: 13px; padding: 8px 18px;">Отмена</button>
+                <button type="button" id="system-settings-save-btn" class="btn btn-primary btn-glow" style="font-size: 13px; padding: 8px 22px;">Сохранить настройки</button>
             </footer>
         </div>
     </div>

@@ -502,9 +502,29 @@ function setupEventListeners() {
         });
     }
 
+    const quickSavePromptBtn = document.getElementById("sys-quick-save-prompt-btn");
+    if (quickSavePromptBtn) {
+        quickSavePromptBtn.addEventListener("click", async () => {
+            await saveSystemSettings(false);
+        });
+    }
+
+    // Горячие клавиши Ctrl+S / Cmd+S для сохранения промпта и постфикса
+    const postfixEl = document.getElementById("sys-cover-letter-postfix");
+    [promptEditor, postfixEl].forEach(el => {
+        if (el) {
+            el.addEventListener("keydown", async (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                    e.preventDefault();
+                    await saveSystemSettings(false);
+                }
+            });
+        }
+    });
+
     if (saveSystemSettingsBtn) {
         saveSystemSettingsBtn.addEventListener("click", async () => {
-            await saveSystemSettings();
+            await saveSystemSettings(true);
         });
     }
 
@@ -4615,13 +4635,18 @@ async function openSystemSettings() {
 }
 
 // Сохранение системных настроек
-async function saveSystemSettings() {
+async function saveSystemSettings(closeModal = true) {
     const saveBtn = document.getElementById("system-settings-save-btn");
+    const quickSaveBtn = document.getElementById("sys-quick-save-prompt-btn");
     const modal = document.getElementById("system-settings-modal");
     
     if (saveBtn) {
         saveBtn.setAttribute("disabled", "true");
         saveBtn.textContent = "Сохранение...";
+    }
+    if (quickSaveBtn) {
+        quickSaveBtn.setAttribute("disabled", "true");
+        quickSaveBtn.innerHTML = `<span>⏳</span><span>Сохранение...</span>`;
     }
 
     try {
@@ -4630,7 +4655,9 @@ async function saveSystemSettings() {
         const postfixInput = document.getElementById("sys-cover-letter-postfix");
         const mainPrimarySelect = document.getElementById("sys-main-primary-select");
 
-        const selectedPrimary = mainPrimarySelect ? mainPrimarySelect.value : activeUnifiedProvider;
+        const selectedPrimary = (mainPrimarySelect && mainPrimarySelect.value) 
+            ? mainPrimarySelect.value 
+            : (activeUnifiedProvider || (userSettings && userSettings.primary_provider) || "groq");
 
         let primaryProvider = "openai";
         let openaiPreset = selectedPrimary;
@@ -4671,7 +4698,9 @@ async function saveSystemSettings() {
             }).catch(() => {});
 
             showToast("Системные настройки успешно сохранены!", "success");
-            if (modal) modal.classList.add("hide");
+            if (closeModal && modal) {
+                modal.classList.add("hide");
+            }
             await loadUnifiedProviders();
             renderProvidersCards();
             await checkStatus();
@@ -4685,6 +4714,10 @@ async function saveSystemSettings() {
         if (saveBtn) {
             saveBtn.removeAttribute("disabled");
             saveBtn.textContent = "Сохранить настройки";
+        }
+        if (quickSaveBtn) {
+            quickSaveBtn.removeAttribute("disabled");
+            quickSaveBtn.innerHTML = `<span>💾</span><span>Сохранить</span>`;
         }
     }
 }
