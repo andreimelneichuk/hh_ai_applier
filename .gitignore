@@ -18,6 +18,8 @@ jobs.db
 *.db
 *.db-journal
 playwright_session/
+test_session*/
+test_*session*/
 
 # Logs
 *.log

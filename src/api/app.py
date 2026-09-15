@@ -21,7 +21,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="HeadHunter Job Applier Dashboard",
         description="Модульный ассистент поиска и авто-откликов для hh.ru",
-        version="1.0.0"
+        version="1.0.1"
     )
 
     # Инициализация базы данных

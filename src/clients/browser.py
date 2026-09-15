@@ -9,6 +9,18 @@ from src.core.paths import get_app_data_dir
 
 logger = logging.getLogger("HHBrowserClient")
 
+DEFAULT_CHROME_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-infobars",
+    "--disable-extensions",
+    "--ignore-certificate-errors",
+]
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
 class HHBrowserClient:
     _lock = threading.RLock()
 
@@ -41,9 +53,9 @@ class HHBrowserClient:
         if not self.playwright:
             self.playwright = sync_playwright().start()
         if not self.context:
-            launch_args = args or []
-            # Пробуем доступные каналы запуска (системный Chrome, Edge или встроенный Chromium)
-            channels_to_try = ["chrome", None, "msedge"]
+            passed_args = args or []
+            launch_args = list(dict.fromkeys(passed_args + DEFAULT_CHROME_ARGS))
+            channels_to_try = ["chrome", None]
             last_err = None
             for channel in channels_to_try:
                 try:
@@ -51,12 +63,22 @@ class HHBrowserClient:
                         "user_data_dir": self.user_data_dir,
                         "headless": headless,
                         "args": launch_args,
+                        "user_agent": DEFAULT_USER_AGENT,
                         "no_viewport": True,
-                        "slow_mo": 100 if not headless else 0
+                        "slow_mo": 100 if not headless else 0,
+                        "ignore_https_errors": True,
                     }
                     if channel:
                         kwargs["channel"] = channel
                     self.context = self.playwright.chromium.launch_persistent_context(**kwargs)
+                    try:
+                        self.context.add_init_script("""
+                            Object.defineProperty(navigator, 'webdriver', {
+                                get: () => undefined
+                            });
+                        """)
+                    except Exception:
+                        pass
                     if channel:
                         logger.info(f"Браузер успешно запущен через канал channel='{channel}'")
                     break
@@ -86,23 +108,36 @@ class HHBrowserClient:
                 self.stop()
                 
             self.start(headless=False, args=["--start-maximized"])
-            page = self.context.new_page()
-            page.goto("https://hh.ru/login")
+            
+            # Используем существующую первую страницу контекста или создаем новую
+            pages = self.context.pages
+            page = pages[0] if pages else self.context.new_page()
+            
+            try:
+                page.goto("https://hh.ru/login", wait_until="domcontentloaded", timeout=20000)
+            except Exception as e:
+                logger.warning(f"Навигация на страницу входа: {e}")
             
             logger.info("Браузер запущен. Пожалуйста, пройдите авторизацию. Закройте окно браузера для продолжения.")
             
-            # Ждем, пока браузер закроется
             closed = [False]
-            def on_close(ctx):
+            def set_closed(*args):
                 closed[0] = True
-            self.context.on("close", on_close)
+
+            page.on("close", set_closed)
+            self.context.on("close", set_closed)
             
+            # Ждем закрытия рабочей страницы или контекста
             while not closed[0]:
                 try:
-                    if not self.context.pages:
+                    if page.is_closed():
                         closed[0] = True
                         break
-                    page.wait_for_timeout(1000)
+                    open_pages = [p for p in self.context.pages if not p.is_closed()]
+                    if not open_pages:
+                        closed[0] = True
+                        break
+                    time.sleep(0.5)
                 except Exception:
                     closed[0] = True
                     break
@@ -117,14 +152,14 @@ class HHBrowserClient:
         """Проверяет, авторизован ли пользователь (сессия активна)."""
         with self._lock:
             logger.info("Проверка сессии hh.ru...")
+            page = None
             try:
                 self._ensure_started()
                 page = self.context.new_page()
-                page.goto("https://hh.ru/applicant/resumes", timeout=25000)
                 try:
-                    page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
+                    page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
+                except Exception as goto_err:
+                    logger.warning(f"Предупреждение/таймаут навигации при проверке сессии: {goto_err}")
                 
                 # 1. Проверяем через глобальный JS-объект hh.ru (самый надежный способ)
                 auth_info = {}
@@ -145,20 +180,27 @@ class HHBrowserClient:
                 if auth_info:
                     user_type = auth_info.get("userType", "")
                     has_id = bool(auth_info.get("hhid") or auth_info.get("login"))
-                    logged_in = (user_type == "applicant") or (user_type != "anonymous" and has_id)
-                    logger.info(f"Проверка сессии по globalVars: userType='{user_type}', hhid='{auth_info.get('hhid')}', Вошли: {logged_in}")
-                    page.close()
-                    return bool(logged_in)
+                    if user_type == "applicant" or (user_type != "anonymous" and has_id):
+                        logger.info(f"Проверка сессии по globalVars: userType='{user_type}', hhid='{auth_info.get('hhid')}', Вошли: True")
+                        page.close()
+                        return True
+                    elif user_type == "anonymous":
+                        logger.info(f"Проверка сессии по globalVars: userType='anonymous', Вошли: False")
+                        page.close()
+                        return False
 
-                # 2. Фолбек через проверку элементов интерфейса
+                # 2. Фолбек через проверку элементов интерфейса и URL
                 current_url = page.url.lower()
                 if "/login" in current_url or "/account/login" in current_url:
                     page.close()
                     return False
 
-                # Проверяем наличие кнопки 'Войти'
                 login_btn = page.query_selector('[data-qa="login"], a[href*="/login"], a[href*="/account/login"]')
-                profile_elem = page.query_selector('[data-qa="mainmenu_applicantInfo"], [data-qa="mainmenu_profile"], [data-qa="profileAndResumes-button"]')
+                profile_elem = page.query_selector(
+                    '[data-qa="mainmenu_applicantInfo"], [data-qa="mainmenu_profile"], '
+                    '[data-qa="profileAndResumes-button"], [data-qa="resume-card-title"], '
+                    '[data-qa*="resume-card-link"], [data-qa="resume-title"]'
+                )
 
                 logged_in = profile_elem is not None and login_btn is None
                 logger.info(f"Проверка сессии по DOM: profile_found={profile_elem is not None}, login_btn={login_btn is not None}. Вошли: {logged_in}")
@@ -166,8 +208,11 @@ class HHBrowserClient:
                 return logged_in
             except Exception as e:
                 logger.error(f"Ошибка при проверке авторизации: {e}")
-                if 'page' in locals() and not page.is_closed():
-                    page.close()
+                if page and not page.is_closed():
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
                 return False
 
     def get_my_info(self) -> Dict[str, Any]:
@@ -177,11 +222,10 @@ class HHBrowserClient:
             try:
                 self._ensure_started()
                 page = self.context.new_page()
-                page.goto("https://hh.ru/applicant/resumes", timeout=25000)
                 try:
-                    page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
+                    page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
+                except Exception as goto_err:
+                    logger.warning(f"Предупреждение навигации в get_my_info: {goto_err}")
                 
                 # Пробуем получить email из window.globalVars
                 email = "Не указан"
@@ -220,11 +264,10 @@ class HHBrowserClient:
             try:
                 self._ensure_started()
                 page = self.context.new_page()
-                page.goto("https://hh.ru/applicant/resumes", timeout=25000)
                 try:
-                    page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
+                    page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
+                except Exception as goto_err:
+                    logger.warning(f"Предупреждение навигации в get_my_resumes: {goto_err}")
                 
                 # Даем время React-приложению отрендерить карточки резюме
                 try:
@@ -613,8 +656,10 @@ class HHBrowserClient:
                 for current_page in range(max_pages):
                     url = f"{base_url}&page={current_page}"
                     logger.info(f"Переход на страницу рекомендаций {current_page}: {url}")
-                    page.goto(url, timeout=20000)
-                    page.wait_for_load_state("domcontentloaded")
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    except Exception as goto_err:
+                        logger.warning(f"Предупреждение навигации рекомендаций {current_page}: {goto_err}")
                     
                     try:
                         page.wait_for_selector('[data-qa="serp-item__title"]', timeout=4000)
@@ -671,9 +716,11 @@ class HHBrowserClient:
                 for current_page in range(max_pages):
                     url = f"{search_url}&page={current_page}"
                     logger.info(f"Переход на страницу поиска {current_page}: {url}")
-                    page.goto(url, timeout=20000)
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    except Exception as goto_err:
+                        logger.warning(f"Предупреждение навигации поиска {current_page}: {goto_err}")
                     
-                    page.wait_for_load_state("domcontentloaded")
                     try:
                         page.wait_for_selector('[data-qa="serp-item__title"]', timeout=3000)
                     except Exception:
@@ -722,8 +769,10 @@ class HHBrowserClient:
             with self._lock:
                 self._ensure_started()
                 page = self.context.new_page()
-                page.goto(f"https://hh.ru/vacancy/{vacancy_id}", timeout=20000)
-                page.wait_for_load_state("domcontentloaded")
+                try:
+                    page.goto(f"https://hh.ru/vacancy/{vacancy_id}", wait_until="domcontentloaded", timeout=15000)
+                except Exception as goto_err:
+                    logger.warning(f"Предупреждение навигации в get_vacancy_details {vacancy_id}: {goto_err}")
                 
                 title_elem = page.query_selector('[data-qa="vacancy-title"]')
                 title = title_elem.text_content().strip() if title_elem else "Вакансия"
@@ -792,8 +841,10 @@ class HHBrowserClient:
             with self._lock:
                 self._ensure_started()
                 page = self.context.new_page()
-                page.goto(f"https://hh.ru/applicant/vacancy_response?vacancyId={vacancy_id}&startedWithQuestion=false", timeout=20000)
-                page.wait_for_load_state("domcontentloaded")
+                try:
+                    page.goto(f"https://hh.ru/applicant/vacancy_response?vacancyId={vacancy_id}&startedWithQuestion=false", wait_until="domcontentloaded", timeout=15000)
+                except Exception as goto_err:
+                    logger.warning(f"Предупреждение навигации в get_vacancy_questions {vacancy_id}: {goto_err}")
                 
                 # Проверяем, есть ли вопросы на странице
                 task_questions = page.query_selector_all('[data-qa="task-question"]')
@@ -873,7 +924,10 @@ class HHBrowserClient:
                 page = self.context.new_page()
                 
                 # Сначала пробуем страницу с вакансией
-                page.goto(f"https://hh.ru/vacancy/{vacancy_id}", timeout=20000)
+                try:
+                    page.goto(f"https://hh.ru/vacancy/{vacancy_id}", wait_until="domcontentloaded", timeout=15000)
+                except Exception as goto_err:
+                    logger.warning(f"Предупреждение навигации в apply_to_vacancy {vacancy_id}: {goto_err}")
                 page.wait_for_load_state("domcontentloaded")
             
                 # 1. Проверяем, откликнулись ли уже или получен отказ
