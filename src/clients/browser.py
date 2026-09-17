@@ -18,6 +18,11 @@ DEFAULT_CHROME_ARGS = [
     "--disable-infobars",
     "--disable-extensions",
     "--ignore-certificate-errors",
+    "--disable-breakpad",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-sync",
 ]
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
@@ -38,14 +43,14 @@ class HHBrowserClient:
 
     def _cleanup_singleton_files(self):
         """Удаляет Singleton-файлы Chrome, которые блокируют запуск после краша."""
-        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
             path = os.path.join(self.user_data_dir, name)
             if os.path.exists(path) or os.path.islink(path):
                 try:
                     os.remove(path)
                     logger.info(f"Удалён Singleton-файл Chrome: {path}")
                 except Exception as e:
-                    logger.warning(f"Не удалось удалить Singleton-файл {path}: {e}")
+                    logger.debug(f"Не удалось удалить Singleton-файл {path}: {e}")
 
     def start(self, headless: bool = True, args: List[str] = None):
         """Запускает Playwright и создает постоянный контекст."""
@@ -67,6 +72,7 @@ class HHBrowserClient:
                         "no_viewport": True,
                         "slow_mo": 100 if not headless else 0,
                         "ignore_https_errors": True,
+                        "timeout": 15000,
                     }
                     if channel:
                         kwargs["channel"] = channel
@@ -90,13 +96,21 @@ class HHBrowserClient:
                 raise last_err
 
     def stop(self):
-        """Останавливает Playwright и закрывает контекст."""
+        """Останавливает Playwright и закрывает контекст без падений при закрытом окне."""
         if self.context:
-            self.context.close()
-            self.context = None
+            try:
+                self.context.close()
+            except Exception as e:
+                logger.debug(f"Контекст Playwright уже был закрыт или завершен: {e}")
+            finally:
+                self.context = None
         if self.playwright:
-            self.playwright.stop()
-            self.playwright = None
+            try:
+                self.playwright.stop()
+            except Exception as e:
+                logger.debug(f"Исключение при остановке Playwright: {e}")
+            finally:
+                self.playwright = None
 
     def open_login_browser(self):
         """Открывает видимое окно браузера для прохождения ручного входа."""
@@ -106,6 +120,7 @@ class HHBrowserClient:
             was_running = self.context is not None
             if was_running:
                 self.stop()
+                time.sleep(0.3)
                 
             self.start(headless=False, args=["--start-maximized"])
             
@@ -124,13 +139,16 @@ class HHBrowserClient:
             def set_closed(*args):
                 closed[0] = True
 
-            page.on("close", set_closed)
-            self.context.on("close", set_closed)
+            try:
+                page.on("close", set_closed)
+                self.context.on("close", set_closed)
+            except Exception:
+                pass
             
             # Ждем закрытия рабочей страницы или контекста
             while not closed[0]:
                 try:
-                    if page.is_closed():
+                    if not self.context or page.is_closed():
                         closed[0] = True
                         break
                     open_pages = [p for p in self.context.pages if not p.is_closed()]
@@ -142,16 +160,18 @@ class HHBrowserClient:
                     closed[0] = True
                     break
             logger.info("Браузер для авторизации закрыт.")
-            self.stop() # закрываем после логина
+            self.stop()
+            # Даем Windows 0.5с для сброса файловых блокировок профиля Chromium
+            time.sleep(0.5)
 
     def _ensure_started(self):
         if not self.context:
             self.start(headless=True)
 
-    def is_logged_in(self) -> bool:
-        """Проверяет, авторизован ли пользователь (сессия активна)."""
+    def check_session_and_get_info(self) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Проверяет авторизацию и извлекает информацию о пользователе за один переход."""
         with self._lock:
-            logger.info("Проверка сессии hh.ru...")
+            logger.info("Комплексная проверка сессии hh.ru...")
             page = None
             try:
                 self._ensure_started()
@@ -159,9 +179,9 @@ class HHBrowserClient:
                 try:
                     page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
                 except Exception as goto_err:
-                    logger.warning(f"Предупреждение/таймаут навигации при проверке сессии: {goto_err}")
+                    logger.warning(f"Предупреждение навигации при проверке сессии: {goto_err}")
                 
-                # 1. Проверяем через глобальный JS-объект hh.ru (самый надежный способ)
+                # 1. Проверяем через глобальный JS-объект hh.ru (самый быстрый и надежный способ)
                 auth_info = {}
                 try:
                     auth_info = page.evaluate("""() => {
@@ -177,84 +197,64 @@ class HHBrowserClient:
                 except Exception:
                     pass
 
-                if auth_info:
-                    user_type = auth_info.get("userType", "")
-                    has_id = bool(auth_info.get("hhid") or auth_info.get("login"))
-                    if user_type == "applicant" or (user_type != "anonymous" and has_id):
-                        logger.info(f"Проверка сессии по globalVars: userType='{user_type}', hhid='{auth_info.get('hhid')}', Вошли: True")
-                        page.close()
-                        return True
-                    elif user_type == "anonymous":
-                        logger.info(f"Проверка сессии по globalVars: userType='anonymous', Вошли: False")
-                        page.close()
-                        return False
+                user_type = (auth_info or {}).get("userType", "")
+                has_id = bool((auth_info or {}).get("hhid") or (auth_info or {}).get("login"))
+                is_auth_via_global = (user_type == "applicant" or (user_type != "anonymous" and has_id))
 
-                # 2. Фолбек через проверку элементов интерфейса и URL
                 current_url = page.url.lower()
-                if "/login" in current_url or "/account/login" in current_url:
+                is_login_page = "/login" in current_url or "/account/login" in current_url
+
+                if not is_auth_via_global and not is_login_page:
+                    login_btn = page.query_selector('[data-qa="login"], a[href*="/login"], a[href*="/account/login"]')
+                    profile_elem = page.query_selector(
+                        '[data-qa="mainmenu_applicantInfo"], [data-qa="mainmenu_profile"], '
+                        '[data-qa="profileAndResumes-button"], [data-qa="resume-card-title"], '
+                        '[data-qa*="resume-card-link"], [data-qa="resume-title"]'
+                    )
+                    is_logged = (profile_elem is not None and login_btn is None)
+                else:
+                    is_logged = is_auth_via_global and not is_login_page
+
+                if not is_logged:
+                    logger.info(f"Проверка сессии: авторизация не активна (is_auth={is_logged}, userType='{user_type}')")
                     page.close()
-                    return False
+                    return False, None
 
-                login_btn = page.query_selector('[data-qa="login"], a[href*="/login"], a[href*="/account/login"]')
-                profile_elem = page.query_selector(
-                    '[data-qa="mainmenu_applicantInfo"], [data-qa="mainmenu_profile"], '
-                    '[data-qa="profileAndResumes-button"], [data-qa="resume-card-title"], '
-                    '[data-qa*="resume-card-link"], [data-qa="resume-title"]'
-                )
-
-                logged_in = profile_elem is not None and login_btn is None
-                logger.info(f"Проверка сессии по DOM: profile_found={profile_elem is not None}, login_btn={login_btn is not None}. Вошли: {logged_in}")
-                page.close()
-                return logged_in
-            except Exception as e:
-                logger.error(f"Ошибка при проверке авторизации: {e}")
-                if page and not page.is_closed():
-                    try:
-                        page.close()
-                    except Exception:
-                        pass
-                return False
-
-    def get_my_info(self) -> Dict[str, Any]:
-        """Получает базовую информацию о пользователе со страницы резюме."""
-        with self._lock:
-            logger.info("Получение информации о пользователе...")
-            try:
-                self._ensure_started()
-                page = self.context.new_page()
-                try:
-                    page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
-                except Exception as goto_err:
-                    logger.warning(f"Предупреждение навигации в get_my_info: {goto_err}")
-                
-                # Пробуем получить email из window.globalVars
-                email = "Не указан"
-                try:
-                    g_login = page.evaluate("() => window.globalVars ? window.globalVars.login : ''")
-                    if g_login:
-                        email = str(g_login)
-                except Exception:
-                    pass
-
-                # Извлекаем имя с шапки страницы или бокового меню
+                # Если авторизован, сразу извлекаем email и имя
+                email = str(auth_info.get("login", "")) if auth_info and auth_info.get("login") else "Не указан"
                 name_elem = page.query_selector('.resume-header-name, .applicant-name, [data-qa="mainmenu_applicantInfo"], [data-qa="profileAndResumes-button"]')
                 name = name_elem.text_content().strip() if name_elem else "Пользователь HH"
                 if not name or "Резюме" in name:
                     name = email.split("@")[0] if "@" in email else "Пользователь HH"
 
                 page.close()
-                return {
+                user_data = {
                     "first_name": name,
                     "last_name": "",
                     "middle_name": "",
                     "email": email,
                     "is_applicant": True
                 }
+                logger.info(f"Сессия hh.ru активна. Пользователь: {name} ({email})")
+                return True, user_data
             except Exception as e:
-                logger.error(f"Не удалось получить информацию о пользователе: {e}")
-                if 'page' in locals() and not page.is_closed():
-                    page.close()
-                return {}
+                logger.error(f"Ошибка при комплексной проверке сессии: {e}")
+                if page and not page.is_closed():
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                return False, None
+
+    def is_logged_in(self) -> bool:
+        """Проверяет, авторизован ли пользователь (сессия активна)."""
+        is_logged, _ = self.check_session_and_get_info()
+        return is_logged
+
+    def get_my_info(self) -> Dict[str, Any]:
+        """Получает базовую информацию о пользователе со страницы резюме."""
+        _, user_info = self.check_session_and_get_info()
+        return user_info or {}
 
     def get_my_resumes(self) -> List[Dict[str, Any]]:
         """Получает список всех резюме пользователя с сайта."""

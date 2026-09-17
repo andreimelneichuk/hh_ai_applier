@@ -303,114 +303,114 @@ class TestE2EComprehensive(unittest.TestCase):
                 
                 # 1. Открываем веб-интерфейс
                 page.goto(self.server_url)
-            page.wait_for_selector("#vacancies-container")
-            
-            # Ждем загрузки карточек вакансий
-            page.wait_for_selector(".vacancy-card", timeout=10000)
-            cards = page.query_selector_all(".vacancy-card")
-            self.assertGreaterEqual(len(cards), 3, "Должно отображаться минимум 3 тестовых вакансии")
+                page.wait_for_selector("#vacancies-container")
+                
+                # Ждем загрузки карточек вакансий
+                page.wait_for_selector(".vacancy-card", timeout=10000)
+                cards = page.query_selector_all(".vacancy-card")
+                self.assertGreaterEqual(len(cards), 3, "Должно отображаться минимум 3 тестовых вакансии")
 
-            # 2. Проверяем тултип на бейдже процента (шкалы 5 категорий)
-            score_badges = page.query_selector_all(".score-badge")
-            self.assertGreater(len(score_badges), 0)
-            tooltip_found = False
-            for b in score_badges:
-                title = b.get_attribute("title")
-                if title and "Стек:" in title and "Опыт:" in title:
-                    tooltip_found = True
-                    break
-            self.assertTrue(tooltip_found, "Тултип с 5 шкалами должен присутствовать на бейдже оценки")
+                # 2. Проверяем тултип на бейдже процента (шкалы 5 категорий)
+                score_badges = page.query_selector_all(".score-badge")
+                self.assertGreater(len(score_badges), 0)
+                tooltip_found = False
+                for b in score_badges:
+                    title = b.get_attribute("title")
+                    if title and "Стек:" in title and "Опыт:" in title:
+                        tooltip_found = True
+                        break
+                self.assertTrue(tooltip_found, "Тултип с 5 шкалами должен присутствовать на бейдже оценки")
 
-            # 3. Кликаем по карточке с 85% (Beta Tech)
-            beta_card = page.locator("text=Beta Tech").first
-            self.assertTrue(beta_card.is_visible())
-            beta_card.click()
+                # 3. Кликаем по карточке с 85% (Beta Tech)
+                beta_card = page.locator("text=Beta Tech").first
+                self.assertTrue(beta_card.is_visible())
+                beta_card.click()
 
-            # Ждем открытия модалки вакансии
-            page.locator("#vacancy-modal").wait_for(state="visible", timeout=5000)
-            
-            # Проверяем блок детализации по 5 шкалам
-            breakdown_card = page.locator("#modal-scores-breakdown-card")
-            self.assertTrue(breakdown_card.is_visible(), "Карточка 5 шкал должна быть видима в модалке")
-            
-            # Проверяем значения шкал
-            stack_val = page.locator("#scale-stack-val").inner_text()
-            self.assertEqual("26/30", stack_val)
-            exp_val = page.locator("#scale-exp-val").inner_text()
-            self.assertEqual("22/25", exp_val)
-            grade_val = page.locator("#scale-grade-val").inner_text()
-            self.assertEqual("18/20", grade_val)
-            domain_val = page.locator("#scale-domain-val").inner_text()
-            self.assertEqual("11/15", domain_val)
-            format_val = page.locator("#scale-format-val").inner_text()
-            self.assertEqual("8/10", format_val)
-            
-            # Проверяем ширину прогресс-баров (должна быть выставлена стилем width)
-            stack_bar_style = page.locator("#scale-stack-fill").get_attribute("style")
-            self.assertIn("width:", stack_bar_style)
+                # Ждем открытия модалки вакансии
+                page.locator("#vacancy-modal").wait_for(state="visible", timeout=5000)
+                
+                # Проверяем блок детализации по 5 шкалам
+                breakdown_card = page.locator("#modal-scores-breakdown-card")
+                self.assertTrue(breakdown_card.is_visible(), "Карточка 5 шкал должна быть видима в модалке")
+                
+                # Проверяем значения шкал
+                stack_val = page.locator("#scale-stack-val").inner_text()
+                self.assertEqual("26/30", stack_val)
+                exp_val = page.locator("#scale-exp-val").inner_text()
+                self.assertEqual("22/25", exp_val)
+                grade_val = page.locator("#scale-grade-val").inner_text()
+                self.assertEqual("18/20", grade_val)
+                domain_val = page.locator("#scale-domain-val").inner_text()
+                self.assertEqual("11/15", domain_val)
+                format_val = page.locator("#scale-format-val").inner_text()
+                self.assertEqual("8/10", format_val)
+                
+                # Проверяем ширину прогресс-баров (должна быть выставлена стилем width)
+                stack_bar_style = page.locator("#scale-stack-fill").get_attribute("style")
+                self.assertIn("width:", stack_bar_style)
 
-            # Закрываем модалку вакансии
-            page.click("#modal-close-btn")
-            page.locator("#vacancy-modal").wait_for(state="hidden", timeout=5000)
+                # Закрываем модалку вакансии
+                page.click("#modal-close-btn")
+                page.locator("#vacancy-modal").wait_for(state="hidden", timeout=5000)
 
-            # 4. Кликаем по вакансии с блокером (Gamma Cloud)
-            gamma_card = page.locator("text=Gamma Cloud").first
-            gamma_card.click()
-            page.locator("#vacancy-modal").wait_for(state="visible", timeout=5000)
+                # 4. Кликаем по вакансии с блокером (Gamma Cloud)
+                gamma_card = page.locator("text=Gamma Cloud").first
+                gamma_card.click()
+                page.locator("#vacancy-modal").wait_for(state="visible", timeout=5000)
 
-            # Проверяем появление алерта о жестком блокере
-            blocker_alert = page.locator("#modal-blocker-alert")
-            self.assertTrue(blocker_alert.is_visible(), "Алерт о жестком блокере должен быть виден")
-            blocker_text = page.locator("#modal-blocker-text").inner_text()
-            self.assertIn("Новосибирске", blocker_text)
+                # Проверяем появление алерта о жестком блокере
+                blocker_alert = page.locator("#modal-blocker-alert")
+                self.assertTrue(blocker_alert.is_visible(), "Алерт о жестком блокере должен быть виден")
+                blocker_text = page.locator("#modal-blocker-text").inner_text()
+                self.assertIn("Новосибирске", blocker_text)
 
-            # Закрываем модалку
-            page.click("#modal-close-btn")
-            page.locator("#vacancy-modal").wait_for(state="hidden", timeout=5000)
+                # Закрываем модалку
+                page.click("#modal-close-btn")
+                page.locator("#vacancy-modal").wait_for(state="hidden", timeout=5000)
 
-            # 5. Тестируем модалку условий автоостановки (кнопка в системных настройках)
-            page.click("#open-system-settings-btn")
-            page.locator("#system-settings-modal").wait_for(state="visible", timeout=5000)
+                # 5. Тестируем модалку условий автоостановки (кнопка в системных настройках)
+                page.click("#open-system-settings-btn")
+                page.locator("#system-settings-modal").wait_for(state="visible", timeout=5000)
 
-            open_limits_btn = page.locator("#sys-open-limits-modal-btn")
-            self.assertTrue(open_limits_btn.is_visible())
-            open_limits_btn.click()
+                open_limits_btn = page.locator("#sys-open-limits-modal-btn")
+                self.assertTrue(open_limits_btn.is_visible())
+                open_limits_btn.click()
 
-            page.locator("#limits-settings-modal").wait_for(state="visible", timeout=5000)
+                page.locator("#limits-settings-modal").wait_for(state="visible", timeout=5000)
 
-            apps_wrapper = page.locator("#limit-applications-wrapper")
-            proc_wrapper = page.locator("#limit-processed-wrapper")
+                apps_wrapper = page.locator("#limit-applications-wrapper")
+                proc_wrapper = page.locator("#limit-processed-wrapper")
 
-            # Проверяем клик по карточке "Только число откликов"
-            apps_only_card = page.locator('.limit-mode-card[data-mode="applications"]')
-            apps_only_card.click()
-            page.wait_for_timeout(400) # ждем завершения анимации
-            self.assertIn("collapsed", proc_wrapper.get_attribute("class"))
-            self.assertNotIn("collapsed", apps_wrapper.get_attribute("class"))
+                # Проверяем клик по карточке "Только число откликов"
+                apps_only_card = page.locator('.limit-mode-card[data-mode="applications"]')
+                apps_only_card.click()
+                page.wait_for_timeout(400) # ждем завершения анимации
+                self.assertIn("collapsed", proc_wrapper.get_attribute("class"))
+                self.assertNotIn("collapsed", apps_wrapper.get_attribute("class"))
 
-            # Проверяем клик по карточке "Только число оценок"
-            evals_only_card = page.locator('.limit-mode-card[data-mode="processed"]')
-            evals_only_card.click()
-            page.wait_for_timeout(400)
-            self.assertNotIn("collapsed", proc_wrapper.get_attribute("class"))
-            self.assertIn("collapsed", apps_wrapper.get_attribute("class"))
+                # Проверяем клик по карточке "Только число оценок"
+                evals_only_card = page.locator('.limit-mode-card[data-mode="processed"]')
+                evals_only_card.click()
+                page.wait_for_timeout(400)
+                self.assertNotIn("collapsed", proc_wrapper.get_attribute("class"))
+                self.assertIn("collapsed", apps_wrapper.get_attribute("class"))
 
-            # Проверяем клик по карточке "Оба условия"
-            both_card = page.locator('.limit-mode-card[data-mode="both"]')
-            both_card.click()
-            page.wait_for_timeout(400)
-            self.assertNotIn("collapsed", proc_wrapper.get_attribute("class"))
-            self.assertNotIn("collapsed", apps_wrapper.get_attribute("class"))
+                # Проверяем клик по карточке "Оба условия"
+                both_card = page.locator('.limit-mode-card[data-mode="both"]')
+                both_card.click()
+                page.wait_for_timeout(400)
+                self.assertNotIn("collapsed", proc_wrapper.get_attribute("class"))
+                self.assertNotIn("collapsed", apps_wrapper.get_attribute("class"))
 
-            # Сохраняем модалку лимитов
-            page.click("#limits-settings-save-btn")
-            page.locator("#limits-settings-modal").wait_for(state="hidden", timeout=5000)
+                # Сохраняем модалку лимитов
+                page.click("#limits-settings-save-btn")
+                page.locator("#limits-settings-modal").wait_for(state="hidden", timeout=5000)
 
-            # Проверяем обновление бейджа на кнопке лимитов
-            badge_text = page.locator("#sys-limits-badge").inner_text()
-            self.assertTrue(len(badge_text) > 0)
+                # Проверяем обновление бейджа на кнопке лимитов
+                badge_text = page.locator("#sys-limits-badge").inner_text()
+                self.assertTrue(len(badge_text) > 0)
 
-            browser.close()
+                browser.close()
         except Exception as e:
             err_str = str(e)
             if "TargetClosedError" in err_str or "Permission denied" in err_str or "Executable doesn't exist" in err_str or "MachPort" in err_str:

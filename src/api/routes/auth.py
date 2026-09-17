@@ -20,10 +20,20 @@ def run_login_browser_task():
     try:
         hh_client = HHBrowserClient()
         hh_client.open_login_browser()
-        # Сбрасываем кэш, чтобы при следующем запросе проверилось мгновенно
-        state.last_login_check_time = 0.0
+        # Сразу после закрытия окна проверяем сессию и заполняем кэш
+        try:
+            is_auth, u_info = hh_client.check_session_and_get_info()
+            state.cached_login_status = is_auth
+            state.cached_user_info = u_info if is_auth else None
+            state.last_login_check_time = time.time()
+        except Exception as probe_err:
+            logger.warning(f"Ошибка проверки сессии после закрытия окна: {probe_err}")
+            state.last_login_check_time = 0.0
+        finally:
+            hh_client.stop()
     except Exception as e:
         logger.exception(f"Error in login browser task: {e}")
+        state.last_login_check_time = 0.0
     finally:
         state.login_browser_active = False
 
@@ -40,20 +50,23 @@ def open_login_browser(background_tasks: BackgroundTasks):
 def get_status():
     """Проверяет состояние авторизации в браузере с надежным кешированием."""
     now = time.time()
-    # Во время работы пайплайна или если уже авторизованы, не дергаем браузер повторно
-    should_probe = (not state.cached_login_status and (now - state.last_login_check_time > 45))
-    if state.pipeline_status.get("is_running"):
-        should_probe = False
+    # Во время активного окна логина, работы пайплайна или если уже авторизованы, не дергаем браузер повторно
+    should_probe = (
+        not state.cached_login_status
+        and not state.login_browser_active
+        and not state.pipeline_status.get("is_running")
+        and (now - state.last_login_check_time > 45)
+    )
         
     if should_probe:
         hh_client = HHBrowserClient()
         try:
-            state.cached_login_status = hh_client.is_logged_in()
-            if state.cached_login_status:
-                state.cached_user_info = hh_client.get_my_info()
-            else:
-                state.cached_user_info = None
+            is_auth, u_info = hh_client.check_session_and_get_info()
+            state.cached_login_status = is_auth
+            state.cached_user_info = u_info if is_auth else None
             state.last_login_check_time = now
+        except Exception as e:
+            logger.warning(f"Ошибка проверки статуса авторизации: {e}")
         finally:
             hh_client.stop()
         
