@@ -1,3 +1,18 @@
+// Токен приложения: сервер выдаёт его в index.html и требует в каждом запросе к /api/*
+(function installAppTokenFetch() {
+    const meta = document.querySelector('meta[name="app-token"]');
+    const token = meta ? meta.getAttribute("content") : "";
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+        const url = typeof input === "string" ? input : (input && input.url) || "";
+        const isApi = url.startsWith("/api/") || url.startsWith(`${window.location.origin}/api/`);
+        if (!isApi || !token) return nativeFetch(input, init);
+        const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+        headers.set("X-App-Token", token);
+        return nativeFetch(input, { ...init, headers });
+    };
+})();
+
 // Глобальное состояние
 let currentJobs = [];
 let userSettings = {};
@@ -2823,7 +2838,7 @@ async function loadResumesDropdown(selectedResumeId) {
     
     try {
         const response = await fetch("/api/resumes");
-        const data = await response.json();
+        const data = response.ok ? await response.json() : { resumes: [] };
         
         select.innerHTML = "";
         
@@ -2833,7 +2848,11 @@ async function loadResumesDropdown(selectedResumeId) {
         allOpt.textContent = "✨ Все резюме (Автовыбор ИИ)";
         select.appendChild(allOpt);
         
-        if (data.resumes && data.resumes.length > 0) {
+        if (!response.ok) {
+            // Список недоступен (например, браузер занят сканированием) — не теряем сохранённый выбор
+            keepSavedResumeOption(select, selectedResumeId);
+            resumeGroup.classList.remove("hide");
+        } else if (data.resumes && data.resumes.length > 0) {
             data.resumes.forEach(r => {
                 const opt = document.createElement("option");
                 opt.value = r.id;
@@ -2865,7 +2884,20 @@ async function loadResumesDropdown(selectedResumeId) {
     } catch (e) {
         console.error("Error loading resumes:", e);
         select.innerHTML = '<option value="all">✨ Все резюме (Автовыбор ИИ)</option>';
+        keepSavedResumeOption(select, selectedResumeId);
     }
+}
+
+function keepSavedResumeOption(select, selectedResumeId) {
+    if (!selectedResumeId || selectedResumeId === "all") {
+        select.value = "all";
+        return;
+    }
+    const opt = document.createElement("option");
+    opt.value = selectedResumeId;
+    opt.textContent = "📄 Сохранённое резюме (список сейчас недоступен)";
+    select.appendChild(opt);
+    select.value = selectedResumeId;
 }
 
 // Сохранение настроек поиска
@@ -3649,7 +3681,7 @@ function renderJobsList(append = false) {
                 const genBtnHtml = (job.status === "ignored" && !job.cover_letter)
                     ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; border-radius: var(--radius-pill); border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.15); color: #d8b4fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleGenerateLetterQuick('${job.id}')" title="Сгенерировать сопроводительное письмо с ИИ">✨ Письмо</button>`
                     : '';
-                quickBtnHtml = `${genBtnHtml}<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.15); color: #c7d2fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleQuickApply('${job.id}')" title="Сгенерировать письмо, ответить на вопросы и отправить">⚡ ИИ-отклик</button>`;
+                quickBtnHtml = `${genBtnHtml}<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.15); color: #c7d2fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleQuickApplyFromCard('${job.id}', this)" title="Сгенерировать письмо, ответить на вопросы и отправить">⚡ ИИ-отклик</button>`;
             }
             
             const resumeBadgeHtml = job.applied_resume_title 
@@ -4948,36 +4980,79 @@ async function saveNewProfileAnswer() {
 // Быстрый ИИ-отклик по ссылке или ID
 // ----------------------------------------------------
 
-async function handleQuickApply(urlOrId) {
+// Вакансии, по которым сейчас идёт быстрый отклик (защита от двойного клика)
+const quickApplyInFlight = new Set();
+
+async function requestQuickApply(body) {
+    const response = await fetch("/api/quick-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    return { response, data };
+}
+
+async function handleQuickApply(urlOrId, options = {}) {
     if (!urlOrId) {
         showToast("Пожалуйста, вставьте ссылку на вакансию или её ID.", "error");
         return;
     }
+    const key = String(urlOrId).trim();
+    if (quickApplyInFlight.has(key)) return;
+
+    const isDryRun = !!userSettings.dry_run;
+    if (!isDryRun) {
+        const title = options.title ? `«${options.title}»` : "эту вакансию";
+        const confirmed = await showConfirm(
+            `Отправить настоящий отклик на ${title} на hh.ru?\n\nИИ проанализирует вакансию, ответит на вопросы работодателя и отправит отклик. Отменить отправку будет нельзя.`
+        );
+        if (!confirmed) return;
+    }
+
+    quickApplyInFlight.add(key);
 
     const btn = document.getElementById("quick-apply-btn");
     const btnText = document.getElementById("quick-apply-btn-text");
     const loader = document.getElementById("quick-apply-loader");
     const input = document.getElementById("quick-apply-url-input");
+    const cardBtn = options.cardButton || null;
+    const cardBtnText = cardBtn ? cardBtn.textContent : "";
 
     if (btn) {
         btn.setAttribute("disabled", "true");
         if (btnText) btnText.textContent = "Анализ и отклик...";
         if (loader) loader.classList.remove("hide");
     }
+    if (cardBtn) {
+        cardBtn.setAttribute("disabled", "true");
+        cardBtn.textContent = "⏳ Отклик...";
+    }
 
     showToast("⚡ Запущен анализ вакансии, подготовка письма и ответов на вопросы...", "info");
 
     try {
-        const response = await fetch("/api/quick-apply", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                url_or_id: urlOrId,
-                resume_id: userSettings.resume_id
-            })
-        });
+        const body = {
+            url_or_id: urlOrId,
+            resume_id: options.resumeId || userSettings.resume_id,
+            cover_letter: options.coverLetter || null,
+            force: false
+        };
+        let { response, data } = await requestQuickApply(body);
 
-        const data = await response.json();
+        if (response.ok && data.status === "not_eligible") {
+            const blocker = data.has_hard_blocker && data.blocker_reason ? `\nБлокирующий фактор: ${data.blocker_reason}` : "";
+            const forceConfirmed = await showConfirm(
+                `«${data.title}»: совпадение ${data.match_score}% при пороге ${data.threshold}%.${blocker}\n\nВсё равно отправить отклик?`
+            );
+            if (!forceConfirmed) {
+                showToast("Отклик не отправлен: вакансия не прошла порог и помечена как «Не подошёл».", "info");
+                await loadJobs(true);
+                return;
+            }
+            // Отправляем уже подготовленное письмо, чтобы не генерировать его заново
+            ({ response, data } = await requestQuickApply({ ...body, cover_letter: data.cover_letter || body.cover_letter, force: true }));
+        }
 
         if (!response.ok || data.status === "error") {
             showToast("Ошибка быстрого отклика: " + (data.message || data.detail || "не удалось обработать вакансию"), "error");
@@ -5001,7 +5076,9 @@ async function handleQuickApply(urlOrId) {
                 match_score: data.match_score,
                 reasoning: data.reasoning,
                 cover_letter: data.cover_letter,
-                questions_data: data.questions_data
+                questions_data: data.questions_data,
+                applied_resume_id: data.applied_resume_id,
+                applied_resume_title: data.applied_resume_title
             };
             openModal(jobObj);
         } else if (data.status === "dry_run") {
@@ -5014,7 +5091,9 @@ async function handleQuickApply(urlOrId) {
                 match_score: data.match_score,
                 reasoning: data.reasoning,
                 cover_letter: data.cover_letter,
-                questions_data: data.questions_data
+                questions_data: data.questions_data,
+                applied_resume_id: data.applied_resume_id,
+                applied_resume_title: data.applied_resume_title
             };
             openModal(jobObj);
         }
@@ -5022,14 +5101,31 @@ async function handleQuickApply(urlOrId) {
         console.error("Error in quick apply:", e);
         showToast("Сетевая ошибка при быстром отклике.", "error");
     } finally {
+        quickApplyInFlight.delete(key);
         if (btn) {
             btn.removeAttribute("disabled");
             if (btnText) btnText.textContent = "Откликнуться с ИИ";
             if (loader) loader.classList.add("hide");
         }
+        if (cardBtn && cardBtn.isConnected) {
+            cardBtn.removeAttribute("disabled");
+            cardBtn.textContent = cardBtnText;
+        }
     }
 }
 window.handleQuickApply = handleQuickApply;
+
+// Быстрый отклик из карточки списка: переиспользуем уже сохранённое (возможно, отредактированное) письмо
+function handleQuickApplyFromCard(jobId, cardButton) {
+    const job = currentJobs.find(j => String(j.id) === String(jobId));
+    return handleQuickApply(jobId, {
+        cardButton,
+        title: job ? job.title : null,
+        coverLetter: job && job.cover_letter ? job.cover_letter : null,
+        resumeId: job && job.applied_resume_id ? job.applied_resume_id : null
+    });
+}
+window.handleQuickApplyFromCard = handleQuickApplyFromCard;
 
 async function doGenerateCoverLetter(job, textarea, btn, btnText, btnIcon, hintElem) {
     if (btn) btn.setAttribute("disabled", "true");

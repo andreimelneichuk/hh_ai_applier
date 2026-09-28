@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.api.app import app
+from src.api.security import API_TOKEN, TOKEN_HEADER
 import src.db.database as database
 from src.core.config import Config
 
@@ -34,7 +35,7 @@ class TestFrontendAPI(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        cls.client = TestClient(app)
+        cls.client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN})
 
     @classmethod
     def tearDownClass(cls):

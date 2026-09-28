@@ -2,6 +2,7 @@ import asyncio
 import queue
 import threading
 from typing import List, Dict, Any, Optional
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 # Глобальный статус выполнения фонового поиска
@@ -21,6 +22,13 @@ login_browser_active = False
 last_login_check_time = 0.0
 cached_login_status = False
 cached_user_info = None
+
+def ensure_browser_available():
+    """Отклоняет запрос (409), если браузер сейчас занят сканированием или окном входа."""
+    if pipeline_status.get("is_running"):
+        raise HTTPException(status_code=409, detail="Идёт сканирование или переоценка — дождитесь завершения или остановите его.")
+    if login_browser_active:
+        raise HTTPException(status_code=409, detail="Открыто окно входа в hh.ru — завершите вход и закройте его.")
 
 class SearchSettings(BaseModel):
     queries: List[str] = []
@@ -92,6 +100,10 @@ class CustomProviderCreatePayload(BaseModel):
 class QuickApplyPayload(BaseModel):
     url_or_id: str
     resume_id: Optional[str] = None
+    # Письмо, уже отредактированное пользователем: используется вместо генерации нового
+    cover_letter: Optional[str] = None
+    # Отправить отклик даже при совпадении ниже порога или блокирующем факторе
+    force: bool = False
 
 class ApplyPayload(BaseModel):
     vacancy_id: str

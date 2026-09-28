@@ -56,6 +56,8 @@ def trigger_search(background_tasks: BackgroundTasks):
     """Запускает процесс фонового сканирования."""
     if state.pipeline_status["is_running"]:
         return {"status": "error", "message": "Search is already running"}
+    if state.login_browser_active:
+        return {"status": "error", "message": "Открыто окно входа в hh.ru — завершите вход и закройте его."}
         
     settings = get_settings()
     background_tasks.add_task(

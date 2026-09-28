@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from src.core.config import Config
 from src.db import database
-from src.clients.browser import HHBrowserClient
+from src.clients.browser import HHBrowserClient, BrowserBusyError
 from src.clients.llm import LLMAnalyzer, QuotaExceededError
 from src.pipeline.runner import format_hh_resume_to_text, load_resume_text
 from src.api.state import (
@@ -12,7 +12,8 @@ from src.api.state import (
     QuickApplyPayload,
     SaveDraftPayload,
     pipeline_status,
-    run_in_clean_thread
+    run_in_clean_thread,
+    ensure_browser_available
 )
 import src.api.state as state
 
@@ -102,6 +103,7 @@ def get_jobs(status: str = "all", limit: int = 50, offset: int = 0):
 @router.get("/api/vacancies/{vacancy_id}/questions")
 async def get_vacancy_questions(vacancy_id: str):
     """Извлекает вопросы работодателя со страницы вакансии и генерирует ИИ-ответы."""
+    ensure_browser_available()
     def _fetch():
         hh_client = HHBrowserClient()
         try:
@@ -136,6 +138,7 @@ async def get_vacancy_questions(vacancy_id: str):
 @router.post("/api/apply")
 def apply_vacancy(payload: ApplyPayload):
     """Ручной отклик на вакансию в браузере с вопросами и сопроводительным письмом."""
+    ensure_browser_available()
     hh_client = HHBrowserClient()
     try:
         success, err_msg = hh_client.apply_to_vacancy(
@@ -171,6 +174,7 @@ async def quick_apply(payload: QuickApplyPayload):
     vacancy_id = extract_vacancy_id_from_url(payload.url_or_id)
     if not vacancy_id or not vacancy_id.isdigit():
         raise HTTPException(status_code=400, detail="Некорректная ссылка или ID вакансии")
+    ensure_browser_available()
 
     def _do_quick_apply():
         hh_client = HHBrowserClient()
@@ -190,17 +194,21 @@ async def quick_apply(payload: QuickApplyPayload):
             title = details.get("title", "Без названия")
             company = details.get("company", "")
 
+            threshold_str = database.get_config_value("match_threshold")
+            threshold = int(threshold_str) if threshold_str else Config.MATCH_THRESHOLD
+
             analyzer = LLMAnalyzer()
             try:
-                analysis = analyzer.analyze_vacancy(resumes=candidate_resumes, vacancy=details, threshold=Config.MATCH_THRESHOLD)
+                analysis = analyzer.analyze_vacancy(resumes=candidate_resumes, vacancy=details, threshold=threshold)
             except Exception as e:
                 logger.warning(f"LLM ошибка при быстром отклике ({e}). Используем базовое сопроводительное письмо.")
-                analysis = analyzer._mock_analysis(details, match_threshold=Config.MATCH_THRESHOLD, resumes=candidate_resumes)
+                analysis = analyzer._mock_analysis(details, match_threshold=threshold, resumes=candidate_resumes)
             
             chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
             chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
             chosen_resume_text = next((r.get("text", "") for r in candidate_resumes if r.get("id") == chosen_resume_id), candidate_resumes[0].get("text", ""))
-            cover_letter = analysis.cover_letter
+            user_letter = (payload.cover_letter or "").strip()
+            cover_letter = user_letter or analysis.cover_letter
             if not cover_letter or not cover_letter.strip():
                 cover_letter = analyzer.generate_cover_letter(chosen_resume_text, details, resumes=candidate_resumes)
             postfix = database.get_system_setting("cover_letter_postfix") or ""
@@ -214,6 +222,42 @@ async def quick_apply(payload: QuickApplyPayload):
                 scores_dict["has_hard_blocker"] = analysis.has_hard_blocker
                 scores_dict["blocker_reason"] = analysis.blocker_reason
                 scores_json_str = json.dumps(scores_dict, ensure_ascii=False)
+
+            dry_run_val = database.get_config_value("dry_run")
+            is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
+
+            is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= threshold)
+            if not is_eligible and not payload.force and not is_dry_run:
+                # Не отправляем отклик на неподходящую вакансию без явного подтверждения пользователя
+                database.delete_vacancy(vacancy_id)
+                database.save_vacancy(
+                    vacancy_id=vacancy_id,
+                    title=title,
+                    company=company,
+                    status="ignored",
+                    match_score=analysis.match_score,
+                    analysis_reason=analysis.reasoning,
+                    cover_letter=cover_letter,
+                    questions_data=None,
+                    applied_resume_id=chosen_resume_id,
+                    applied_resume_title=chosen_resume_title,
+                    scores_data=scores_json_str,
+                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
+                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
+                )
+                return {
+                    "status": "not_eligible",
+                    "vacancy_id": vacancy_id,
+                    "title": title,
+                    "company": company,
+                    "match_score": analysis.match_score,
+                    "threshold": threshold,
+                    "has_hard_blocker": analysis.has_hard_blocker,
+                    "blocker_reason": analysis.blocker_reason,
+                    "reasoning": analysis.reasoning,
+                    "cover_letter": cover_letter,
+                    "message": "Вакансия не прошла порог соответствия — отклик не отправлен."
+                }
 
             questions = hh_client.get_vacancy_questions(vacancy_id)
             questions_data_str = None
@@ -230,9 +274,6 @@ async def quick_apply(payload: QuickApplyPayload):
 
                 if not q_res.all_confident or any(a.requires_user_input or a.confidence < 85 for a in q_res.answers):
                     needs_user_answers = True
-
-            dry_run_val = database.get_config_value("dry_run")
-            is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
 
             if needs_user_answers:
                 status = "needs_answers"
@@ -331,7 +372,7 @@ async def quick_apply(payload: QuickApplyPayload):
                     return {"status": "error", "message": f"Ошибка отправки отклика: {err_msg}"}
 
                 return {
-                    "status": "applied",
+                    "status": status,
                     "vacancy_id": vacancy_id,
                     "title": title,
                     "company": company,
@@ -343,6 +384,8 @@ async def quick_apply(payload: QuickApplyPayload):
                     "scores_data": scores_dict,
                     "message": f"Отклик с резюме '{chosen_resume_title}' и ответы успешно отправлены работодателю!"
                 }
+        except BrowserBusyError:
+            raise
         except Exception as e:
             logger.error(f"Ошибка в quick_apply: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
@@ -361,8 +404,7 @@ async def reanalyze_vacancy(vacancy_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Вакансия не найдена")
     
-    if state.pipeline_status["is_running"]:
-        raise HTTPException(status_code=409, detail="Сканирование уже запущено, подождите")
+    ensure_browser_available()
     
     def run_reanalyze():
         try:
@@ -464,6 +506,8 @@ async def reanalyze_vacancy(vacancy_id: str):
             )
             logger.info(f"Переоценка вакансии {vacancy_id}: статус={status}, score={analysis.match_score}, резюме={chosen_resume_title}")
             return {"status": "ok", "new_status": status, "score": analysis.match_score, "resume": chosen_resume_title}
+        except BrowserBusyError:
+            raise
         except Exception as e:
             logger.error(f"Ошибка при переоценке вакансии {vacancy_id}: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
@@ -481,6 +525,7 @@ async def reanalyze_vacancy(vacancy_id: str):
 @router.post("/api/generate-cover-letter/{vacancy_id}")
 async def generate_cover_letter_endpoint(vacancy_id: str):
     """Генерация персонализированного сопроводительного письма с ИИ для конкретной вакансии."""
+    ensure_browser_available()
     row = database.get_vacancy(vacancy_id)
 
     def _do_generate():
@@ -532,6 +577,8 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
                 "cover_letter": letter,
                 "vacancy_id": vacancy_id
             }
+        except BrowserBusyError:
+            raise
         except Exception as e:
             logger.error(f"Ошибка при генерации сопроводительного письма для {vacancy_id}: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
@@ -560,8 +607,7 @@ def save_vacancy_draft(vacancy_id: str, payload: SaveDraftPayload):
 @router.post("/api/reanalyze-all-failed")
 def reanalyze_all_failed(background_tasks: BackgroundTasks):
     """Повторный анализ всех вакансий с ошибками по очереди в фоне."""
-    if state.pipeline_status["is_running"]:
-        raise HTTPException(status_code=409, detail="Сканирование уже запущено, подождите")
+    ensure_browser_available()
         
     failed_rows = database.get_processed_paginated(status="failed", limit=100, offset=0)
     if not failed_rows:

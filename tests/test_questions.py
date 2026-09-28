@@ -10,6 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import src.db.database as database
 from src.api.app import app
+from src.api.security import API_TOKEN, TOKEN_HEADER
 from src.clients.browser import HHBrowserClient
 from src.clients.llm import LLMAnalyzer, QuestionAnswer, QuestionsAnalysisResult, VacancyAnalysis
 
@@ -28,7 +29,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
             except Exception:
                 pass
         database.init_db()
-        cls.client = TestClient(app)
+        cls.client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN})
 
     @classmethod
     def tearDownClass(cls):
@@ -351,6 +352,63 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
             saved = database.get_vacancy("77788899")
             self.assertIsNotNone(saved)
             self.assertEqual(saved[3], "needs_answers")
+
+    def _quick_apply_mocks(self, score, cover_letter="Письмо от ИИ"):
+        mock_hh = MagicMock()
+        mock_hh.get_vacancy_details.return_value = {"title": "Go Developer", "company": "Corp", "description": "Go, k8s"}
+        mock_hh.get_resume.return_value = None
+        mock_hh.get_vacancy_questions.return_value = []
+        mock_hh.apply_to_vacancy.return_value = (True, "")
+        analysis = VacancyAnalysis(match_score=score, is_match=score >= 70, reasoning="r", cover_letter=cover_letter)
+        return mock_hh, analysis
+
+    def test_08_quick_apply_below_threshold_not_sent_without_force(self):
+        """Вакансия ниже порога не отправляется без force и помечается ignored."""
+        database.set_config_value("dry_run", "false")
+        database.set_config_value("match_threshold", "70")
+        mock_hh, analysis = self._quick_apply_mocks(40)
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"), \
+             patch.object(LLMAnalyzer, "analyze_vacancy", return_value=analysis):
+            res = self.client.post("/api/quick-apply", json={"url_or_id": "55500011"})
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data["status"], "not_eligible")
+            self.assertEqual(data["threshold"], 70)
+            mock_hh.apply_to_vacancy.assert_not_called()
+            mock_hh.get_vacancy_questions.assert_not_called()
+            self.assertEqual(database.get_vacancy("55500011")[3], "ignored")
+
+            # С подтверждением пользователя (force) — отклик уходит с переданным письмом
+            res = self.client.post("/api/quick-apply", json={"url_or_id": "55500011", "force": True, "cover_letter": "Моё письмо"})
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["status"], "applied")
+            sent_letter = mock_hh.apply_to_vacancy.call_args.kwargs["cover_letter"]
+            self.assertTrue(sent_letter.startswith("Моё письмо"))
+
+    def test_09_quick_apply_reports_already_applied(self):
+        """Если hh.ru сообщает о существующем отклике, API возвращает already_applied."""
+        database.set_config_value("dry_run", "false")
+        database.set_config_value("match_threshold", "70")
+        mock_hh, analysis = self._quick_apply_mocks(90)
+        mock_hh.apply_to_vacancy.return_value = (True, "ALREADY_APPLIED")
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"), \
+             patch.object(LLMAnalyzer, "analyze_vacancy", return_value=analysis):
+            res = self.client.post("/api/quick-apply", json={"url_or_id": "55500022"})
+            self.assertEqual(res.json()["status"], "already_applied")
+
+    def test_10_browser_endpoints_rejected_while_pipeline_running(self):
+        """Пока идёт сканирование, эндпоинты с браузером отвечают 409 и не запускают второй Chrome."""
+        import src.api.state as state
+        state.pipeline_status["is_running"] = True
+        try:
+            with patch("src.api.routes.vacancies.HHBrowserClient") as browser_cls:
+                res = self.client.post("/api/quick-apply", json={"url_or_id": "55500033"})
+                self.assertEqual(res.status_code, 409)
+                browser_cls.assert_not_called()
+        finally:
+            state.pipeline_status["is_running"] = False
 
 if __name__ == "__main__":
     unittest.main()

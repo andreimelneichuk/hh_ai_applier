@@ -10,7 +10,7 @@ from src.clients.llm import LLMAnalyzer, OPENAI_PROVIDER_PRESETS, UNIFIED_PROVID
 from src.api.state import (
     SearchSettings, SystemSettingsPayload, UserProfileAnswerPayload,
     ModelSyncPayload, ModelSelectPayload, ProviderConfigPayload, CustomProviderCreatePayload,
-    ProviderProbePayload
+    ProviderProbePayload, ensure_browser_available
 )
 
 try:
@@ -651,6 +651,7 @@ def get_model_status(probe: bool = False):
 @router.get("/api/resumes")
 def get_resumes():
     """Возвращает список резюме со страницы пользователя."""
+    ensure_browser_available()
     hh_client = HHBrowserClient()
     try:
         resumes = hh_client.get_my_resumes()

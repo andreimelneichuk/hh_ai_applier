@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import src.db.database as database
 from src.api.app import app
+from src.api.security import API_TOKEN, TOKEN_HEADER
 import src.pipeline.runner as main
 from src.clients.browser import HHBrowserClient
 from src.clients.llm import LLMAnalyzer, VacancyAnalysis
@@ -29,7 +30,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
             except Exception:
                 pass
         database.init_db()
-        cls.client = TestClient(app)
+        cls.client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN})
         
     @classmethod
     def tearDownClass(cls):

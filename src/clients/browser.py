@@ -1,5 +1,7 @@
 import os
 import re
+import socket
+import subprocess
 import logging
 import time
 import threading
@@ -26,8 +28,21 @@ DEFAULT_CHROME_ARGS = [
 ]
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
+class BrowserBusyError(RuntimeError):
+    """Профиль браузера уже используется другой задачей (пайплайн, окно входа и т.п.)."""
+
+
 class HHBrowserClient:
     _lock = threading.RLock()
+    # Один persistent-профиль Chrome нельзя открывать двумя браузерами одновременно:
+    # клиент владеет профилем с start() до stop(), остальные ждут или получают BrowserBusyError
+    _profile_lock = threading.Lock()
+    PROFILE_WAIT_TIMEOUT = 10.0
+
+    @classmethod
+    def is_busy(cls) -> bool:
+        """True, если профиль браузера сейчас занят каким-либо клиентом."""
+        return cls._profile_lock.locked()
 
     def __init__(self, user_data_dir: str = None):
         if not user_data_dir or user_data_dir == "playwright_session":
@@ -39,10 +54,56 @@ class HHBrowserClient:
             os.makedirs(self.user_data_dir, exist_ok=True)
         self.playwright = None
         self.context = None
-        self._cleanup_singleton_files()
+        self._owns_profile = False
+
+    def _profile_in_use_by_live_chrome(self) -> bool:
+        """Проверяет, держит ли профиль живой процесс Chrome (например, CLI-запуск в другом процессе).
+
+        На macOS/Linux SingletonLock — симлинк вида "<hostname>-<pid>".
+        На Windows lockfile удалить не получится, пока Chrome его держит, так что отдельная проверка не нужна.
+        """
+        lock_path = os.path.join(self.user_data_dir, "SingletonLock")
+        if not os.path.islink(lock_path):
+            return False
+        try:
+            target = os.readlink(lock_path)
+            host, _, pid_str = target.rpartition("-")
+            pid = int(pid_str)
+        except (OSError, ValueError):
+            return False
+        if host and host != socket.gethostname():
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        except OSError:
+            return False
+        # PID мог быть переиспользован другим процессом — убеждаемся, что это действительно Chrome/Chromium
+        try:
+            comm = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True, timeout=3).stdout
+        except Exception:
+            return False
+        return "chrom" in comm.lower()
+
+    def _acquire_profile(self):
+        if self._owns_profile:
+            return
+        if not HHBrowserClient._profile_lock.acquire(timeout=self.PROFILE_WAIT_TIMEOUT):
+            raise BrowserBusyError("Браузер занят другой задачей (сканирование, вход или другой отклик). Дождитесь её завершения.")
+        self._owns_profile = True
+
+    def _release_profile(self):
+        if self._owns_profile:
+            self._owns_profile = False
+            HHBrowserClient._profile_lock.release()
 
     def _cleanup_singleton_files(self):
-        """Удаляет Singleton-файлы Chrome, которые блокируют запуск после краша."""
+        """Удаляет Singleton-файлы Chrome, оставшиеся после краша. Вызывать только владея профилем."""
+        if self._profile_in_use_by_live_chrome():
+            raise BrowserBusyError("Профиль браузера используется другим запущенным процессом Chrome/HH Applier.")
         for name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
             path = os.path.join(self.user_data_dir, name)
             if os.path.exists(path) or os.path.islink(path):
@@ -54,6 +115,16 @@ class HHBrowserClient:
 
     def start(self, headless: bool = True, args: List[str] = None):
         """Запускает Playwright и создает постоянный контекст."""
+        if self.context:
+            return
+        self._acquire_profile()
+        try:
+            self._launch_context(headless, args)
+        except BaseException:
+            self.stop()
+            raise
+
+    def _launch_context(self, headless: bool, args: Optional[List[str]]):
         self._cleanup_singleton_files()
         if not self.playwright:
             self.playwright = sync_playwright().start()
@@ -114,6 +185,7 @@ class HHBrowserClient:
                 logger.debug(f"Исключение при остановке Playwright: {e}")
             finally:
                 self.playwright = None
+        self._release_profile()
 
     def open_login_browser(self):
         """Открывает видимое окно браузера для прохождения ручного входа."""
