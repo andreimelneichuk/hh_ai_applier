@@ -15,6 +15,25 @@ pipeline_status = {
     "currently_processing": None
 }
 
+# Защищает проверку-и-установку is_running от гонки двух одновременных запросов
+_pipeline_claim_lock = threading.Lock()
+
+def try_claim_pipeline() -> bool:
+    """Атомарно помечает фоновую задачу как запущенную. False — если уже что-то выполняется."""
+    with _pipeline_claim_lock:
+        if pipeline_status["is_running"]:
+            return False
+        pipeline_status["is_running"] = True
+        pipeline_status["stop_requested"] = False
+        return True
+
+def release_pipeline():
+    """Снимает отметку о выполнении фоновой задачи."""
+    with _pipeline_claim_lock:
+        pipeline_status["is_running"] = False
+        pipeline_status["stop_requested"] = False
+        pipeline_status["currently_processing"] = None
+
 # Флаг открытия браузера для входа
 login_browser_active = False
 
@@ -36,11 +55,13 @@ class SearchSettings(BaseModel):
     threshold: int
     resume_id: str
     dry_run: bool
-    gemini_api_keys: str = ""
+    # Ключи = None означает "не менять": основная форма настроек их не присылает,
+    # чтобы не перезаписать ключи, изменённые в окне провайдера, устаревшими значениями
+    gemini_api_keys: Optional[str] = None
     gemini_model: str = "gemini-3.6-flash"
-    mistral_api_keys: str = ""
+    mistral_api_keys: Optional[str] = None
     mistral_model: str = "open-mistral-nemo"
-    openai_api_keys: Optional[str] = ""
+    openai_api_keys: Optional[str] = None
     openai_provider_preset: Optional[str] = "groq"
     openai_base_url: Optional[str] = "https://api.groq.com/openai/v1"
     openai_model: Optional[str] = "llama-3.3-70b-versatile"

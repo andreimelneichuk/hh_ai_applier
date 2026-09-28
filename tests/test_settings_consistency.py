@@ -1,0 +1,85 @@
+import os
+import sys
+import unittest
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import src.db.database as database
+import src.api.state as state
+from src.api.app import app
+from src.api.security import API_TOKEN, TOKEN_HEADER
+
+TEST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_settings_consistency_db.db")
+
+BASE_SETTINGS = {
+    "queries": ["Python"],
+    "area_id": "113",
+    "threshold": 70,
+    "resume_id": "all",
+    "dry_run": True,
+    "openai_provider_preset": "groq",
+}
+
+
+class TestSettingsKeysConsistency(unittest.TestCase):
+    """Ключи провайдеров не должны перезаписываться устаревшими значениями из основной формы."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN})
+
+    def setUp(self):
+        database.DB_PATH = TEST_DB_PATH
+        if os.path.exists(TEST_DB_PATH):
+            os.remove(TEST_DB_PATH)
+        database.init_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        if os.path.exists(TEST_DB_PATH):
+            os.remove(TEST_DB_PATH)
+
+    def test_settings_without_keys_keep_provider_keys(self):
+        self.client.post("/api/providers/gemini", json={"api_keys": ["gem_new_1", "gem_new_2"]})
+        res = self.client.post("/api/settings", json=BASE_SETTINGS)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(database.get_provider_config("gemini")["api_keys"], ["gem_new_1", "gem_new_2"])
+        self.assertEqual(self.client.get("/api/settings").json()["gemini_api_keys"], "gem_new_1,gem_new_2")
+
+    def test_openai_keys_belong_to_selected_preset(self):
+        """Сохранение ключей OpenRouter не должно подменять ключи выбранного пресета Groq."""
+        self.client.post("/api/settings", json={**BASE_SETTINGS, "openai_api_keys": "gsk_groq_key"})
+        self.client.post("/api/providers/openrouter", json={"api_keys": ["sk-or-key"]})
+        data = self.client.get("/api/settings").json()
+        self.assertEqual(data["openai_provider_preset"], "groq")
+        self.assertEqual(data["openai_api_keys"], "gsk_groq_key")
+
+
+class TestPipelineClaim(unittest.TestCase):
+    """Два одновременных запуска не должны стартовать две фоновые задачи."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN})
+
+    def tearDown(self):
+        state.release_pipeline()
+
+    def test_claim_is_exclusive(self):
+        self.assertTrue(state.try_claim_pipeline())
+        self.assertFalse(state.try_claim_pipeline())
+        state.release_pipeline()
+        self.assertTrue(state.try_claim_pipeline())
+
+    def test_second_search_rejected(self):
+        with patch("src.api.routes.pipeline.run_pipeline_task") as task:
+            self.assertTrue(state.try_claim_pipeline())
+            res = self.client.post("/api/search")
+            self.assertEqual(res.json()["status"], "error")
+            task.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

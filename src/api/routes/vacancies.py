@@ -76,6 +76,8 @@ def extract_vacancy_id_from_url(url_or_id: str) -> str:
 @router.get("/api/jobs")
 def get_jobs(status: str = "all", limit: int = 50, offset: int = 0):
     """Возвращает список обработанных вакансий порциями и общие счётчики."""
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
     rows = database.get_processed_paginated(status=status, limit=limit, offset=offset)
     jobs = []
     for r in rows:
@@ -405,6 +407,8 @@ async def reanalyze_vacancy(vacancy_id: str):
         raise HTTPException(status_code=404, detail="Вакансия не найдена")
     
     ensure_browser_available()
+    if not state.try_claim_pipeline():
+        raise HTTPException(status_code=409, detail="Сканирование или переоценка уже запущены, подождите")
     
     def run_reanalyze():
         try:
@@ -516,7 +520,10 @@ async def reanalyze_vacancy(vacancy_id: str):
                 hh_client.stop()
             state.pipeline_status["currently_processing"] = None
     
-    result = await run_in_clean_thread(run_reanalyze)
+    try:
+        result = await run_in_clean_thread(run_reanalyze)
+    finally:
+        state.release_pipeline()
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     
@@ -612,10 +619,10 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
     failed_rows = database.get_processed_paginated(status="failed", limit=100, offset=0)
     if not failed_rows:
         return {"status": "ok", "processed": 0, "message": "Нет вакансий со статусом Ошибка"}
+    if not state.try_claim_pipeline():
+        raise HTTPException(status_code=409, detail="Сканирование или переоценка уже запущены, подождите")
         
     def process_all_task(failed_rows):
-        state.pipeline_status["is_running"] = True
-        state.pipeline_status["stop_requested"] = False
         state.pipeline_status["last_status"] = None
         state.pipeline_status["last_error"] = None
         state.pipeline_status["last_run_stats"] = None
@@ -624,6 +631,7 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
         stats = {
             "processed": 0,
             "matched": 0,
+            "applied": 0,
             "ignored": 0,
             "failed": 0
         }
@@ -720,7 +728,7 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                             if success:
                                 status = "already_applied" if err_msg == "ALREADY_APPLIED" else "applied"
                                 if status == "applied":
-                                    stats["applied"] = stats.get("applied", 0) + 1
+                                    stats["applied"] += 1
                             else:
                                 status = "failed"
                     else:
@@ -762,9 +770,7 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
             state.pipeline_status["last_error"] = str(outer_e)
         finally:
             hh_client.stop()
-            state.pipeline_status["currently_processing"] = None
-            state.pipeline_status["is_running"] = False
-            state.pipeline_status["stop_requested"] = False
+            state.release_pipeline()
 
     background_tasks.add_task(process_all_task, failed_rows)
     return {"status": "started", "message": f"Запущена переоценка {len(failed_rows)} вакансий"}

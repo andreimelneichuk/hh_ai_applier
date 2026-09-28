@@ -20,6 +20,22 @@ except ImportError:
 
 router = APIRouter(tags=["Settings"])
 
+
+def _resolve_provider_keys(provider_id: str, legacy_config_key: str, env_name: str, config_fallback: str) -> str:
+    """Возвращает ключи провайдера так же, как их использует LLMAnalyzer.
+
+    Источник правды — providers_config; legacy app_config/env используются только если строки провайдера нет.
+    (legacy "openai_api_keys" перезаписывается при сохранении любого OpenAI-совместимого провайдера,
+    поэтому читать его первым нельзя — фронт получил бы ключи чужого провайдера.)
+    """
+    cfg = database.get_provider_config(provider_id)
+    if cfg is not None:
+        return ",".join(cfg.get("api_keys", []))
+    raw = database.get_config_value(legacy_config_key)
+    if raw is None:
+        raw = os.getenv(env_name, "") or config_fallback
+    return ",".join(database._parse_keys_field(raw))
+
 @router.get("/api/settings")
 def get_settings():
     """Возвращает текущие настройки поиска из базы данных."""
@@ -44,26 +60,12 @@ def get_settings():
     else:
         dry_run = Config.DRY_RUN
         
-    raw_gemini = database.get_config_value("gemini_api_keys")
-    if raw_gemini is None:
-        gem_cfg = database.get_provider_config("gemini")
-        if gem_cfg and gem_cfg.get("api_keys"):
-            raw_gemini = ",".join(gem_cfg["api_keys"])
-        else:
-            raw_gemini = os.getenv("GEMINI_API_KEYS", "") or Config.GEMINI_API_KEY
-    gemini_api_keys = ",".join(database._parse_keys_field(raw_gemini))
+    gemini_api_keys = _resolve_provider_keys("gemini", "gemini_api_keys", "GEMINI_API_KEYS", Config.GEMINI_API_KEY)
 
     gem_cfg = database.get_provider_config("gemini")
     gemini_model = (gem_cfg.get("active_model") if gem_cfg else None) or database.get_config_value("gemini_model") or Config.GEMINI_MODEL or "gemini-3.6-flash"
 
-    raw_mistral = database.get_config_value("mistral_api_keys")
-    if raw_mistral is None:
-        mis_cfg = database.get_provider_config("mistral")
-        if mis_cfg and mis_cfg.get("api_keys"):
-            raw_mistral = ",".join(mis_cfg["api_keys"])
-        else:
-            raw_mistral = os.getenv("MISTRAL_API_KEYS", "") or Config.MISTRAL_API_KEY
-    mistral_api_keys = ",".join(database._parse_keys_field(raw_mistral))
+    mistral_api_keys = _resolve_provider_keys("mistral", "mistral_api_keys", "MISTRAL_API_KEYS", Config.MISTRAL_API_KEY)
 
     mis_cfg = database.get_provider_config("mistral")
     mistral_model = (mis_cfg.get("active_model") if mis_cfg else None) or database.get_config_value("mistral_model") or Config.MISTRAL_MODEL or "open-mistral-nemo"
@@ -72,13 +74,7 @@ def get_settings():
     preset_info = OPENAI_PROVIDER_PRESETS.get(openai_provider_preset, {})
     oa_cfg = database.get_provider_config(openai_provider_preset)
 
-    raw_openai = database.get_config_value("openai_api_keys")
-    if raw_openai is None:
-        if oa_cfg and oa_cfg.get("api_keys"):
-            raw_openai = ",".join(oa_cfg["api_keys"])
-        else:
-            raw_openai = os.getenv("OPENAI_API_KEYS", "") or Config.OPENAI_API_KEY
-    openai_api_keys = ",".join(database._parse_keys_field(raw_openai))
+    openai_api_keys = _resolve_provider_keys(openai_provider_preset, "openai_api_keys", "OPENAI_API_KEYS", Config.OPENAI_API_KEY)
 
     openai_base_url = (oa_cfg.get("base_url") if oa_cfg else None) or database.get_config_value("openai_base_url") or Config.OPENAI_BASE_URL or preset_info.get("base_url", "https://api.groq.com/openai/v1")
     openai_model = (oa_cfg.get("active_model") if oa_cfg else None) or database.get_config_value("openai_model") or Config.OPENAI_MODEL or preset_info.get("default_model", "llama-3.3-70b-versatile")

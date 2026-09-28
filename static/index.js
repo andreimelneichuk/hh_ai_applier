@@ -2909,8 +2909,6 @@ async function saveSettings(e) {
         .map(q => q.trim())
         .filter(Boolean);
         
-    const geminiKeys = currentGeminiKeys.join(",");
-    const mistralKeys = currentMistralKeys.join(",");
     const modelSelect = document.getElementById("sys-gemini-model-select") || document.getElementById("model-select");
     const selectedModel = modelSelect ? modelSelect.value : (userSettings.gemini_model || "gemini-3.6-flash");
     const mistralModelSelect = document.getElementById("sys-mistral-model-select") || document.getElementById("mistral-model-select");
@@ -2929,11 +2927,9 @@ async function saveSettings(e) {
         threshold: parseInt(document.getElementById("threshold-range").value, 10),
         resume_id: document.getElementById("resume-select").value,
         dry_run: document.getElementById("dryrun-toggle").checked,
-        gemini_api_keys: geminiKeys,
+        // Ключи здесь не отправляем: ими управляют Менеджер ключей и окно провайдера
         gemini_model: selectedModel,
-        mistral_api_keys: mistralKeys,
         mistral_model: selectedMistralModel,
-        openai_api_keys: currentOpenaiKeys.join(","),
         openai_provider_preset: openaiPresetSelect ? openaiPresetSelect.value : (userSettings.openai_provider_preset || "groq"),
         openai_base_url: openaiBaseUrlInput ? openaiBaseUrlInput.value.trim() : (userSettings.openai_base_url || "https://api.groq.com/openai/v1"),
         openai_model: openaiModelSelect ? openaiModelSelect.value : (userSettings.openai_model || "llama-3.3-70b-versatile"),
@@ -2960,7 +2956,7 @@ async function saveSettings(e) {
                 btn.style.backgroundColor = "";
             }, 2000);
             
-            userSettings = payload;
+            userSettings = { ...userSettings, ...payload };
             updateLimitsModalUIFromSettings();
         }
     } catch (e) {
@@ -3150,6 +3146,11 @@ async function saveLimitsSettingsFromModal() {
         limit_applications: nApps,
         limit_processed: nProc
     };
+    // Ключи в userSettings могут быть устаревшими — не отправляем их, чтобы не затереть актуальные
+    const limitsPayload = { ...updatedSettings };
+    delete limitsPayload.gemini_api_keys;
+    delete limitsPayload.mistral_api_keys;
+    delete limitsPayload.openai_api_keys;
 
     if (saveBtn) {
         saveBtn.disabled = true;
@@ -3160,7 +3161,7 @@ async function saveLimitsSettingsFromModal() {
         const response = await fetch("/api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(updatedSettings)
+            body: JSON.stringify(limitsPayload)
         });
 
         if (response.ok) {
@@ -3192,11 +3193,15 @@ async function startScanning() {
     }
     if (isPolling) return;
     
+    // Блокируем кнопку на время запроса, чтобы двойной клик не отправил два запуска
+    if (btn) btn.setAttribute("disabled", "true");
+    let started = false;
     try {
         const response = await fetch("/api/search", { method: "POST" });
         const data = await response.json();
         
         if (data.status === "started") {
+            started = true;
             window.hasReportedCompletion = false;
             setScanningState(true);
             showToast("Сканирование и анализ вакансий запущены", "info");
@@ -3206,6 +3211,8 @@ async function startScanning() {
     } catch (e) {
         console.error("Error starting search:", e);
         showToast("Сетевая ошибка при запуске сканирования", "error");
+    } finally {
+        if (!started && btn) btn.removeAttribute("disabled");
     }
 }
 
@@ -3383,14 +3390,18 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
     
     const fetchId = ++currentFetchId;
     const requestedFilter = currentFilter;
-    const requestedOffset = currentOffset;
+    // Догрузка берёт следующую страницу; обычное/фоновое обновление перезапрашивает всё уже загруженное
+    // с начала, иначе после «Показать ещё» список заменялся бы одной последней страницей
+    const requestedOffset = append ? currentOffset : 0;
+    const requestedLimit = append ? itemsPerPage : currentOffset + itemsPerPage;
     
     try {
         if (!isSilent && !append) {
             setStatsLoading(true);
         }
-        const response = await fetch(`/api/jobs?status=${requestedFilter}&limit=${itemsPerPage}&offset=${requestedOffset}`);
+        const response = await fetch(`/api/jobs?status=${requestedFilter}&limit=${requestedLimit}&offset=${requestedOffset}`);
         if (!response.ok) {
+            if (append) currentOffset = Math.max(0, currentOffset - itemsPerPage);
             if (fetchId === currentFetchId && !isSilent) {
                 setStatsLoading(false);
             }
@@ -3412,8 +3423,8 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
             currentJobs = newJobs;
         }
         
-        // Кэшируем результаты только для вкладки "Все" без догрузки
-        if (requestedFilter === "all" && !append) {
+        // Кэшируем только первую страницу вкладки "Все" (её и показываем при старте)
+        if (requestedFilter === "all" && !append && currentOffset === 0) {
             localStorage.setItem("cached_jobs", JSON.stringify(currentJobs));
             localStorage.setItem("cached_stats", JSON.stringify(data.stats));
         }
@@ -3440,7 +3451,7 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
         // Управляем видимостью кнопки "Показать ещё"
         const loadMoreWrapper = document.getElementById("load-more-wrapper");
         if (loadMoreWrapper) {
-            if (newJobs.length < itemsPerPage) {
+            if (newJobs.length < requestedLimit) {
                 loadMoreWrapper.classList.add("hide");
             } else {
                 loadMoreWrapper.classList.remove("hide");
@@ -3448,6 +3459,7 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
         }
     } catch (e) {
         console.error("Error loading jobs:", e);
+        if (append) currentOffset = Math.max(0, currentOffset - itemsPerPage);
         if (fetchId === currentFetchId && !isSilent) {
             setStatsLoading(false);
         }
@@ -4012,6 +4024,8 @@ function openModal(job) {
         reanalyzeBtn.setAttribute("disabled", "true");
         reanalyzeBtn.textContent = "Анализ...";
         
+        // Одиночная переоценка отчитывается сама — итоговый тост пакетного анализа здесь не нужен
+        window.hasReportedCompletion = true;
         startRealtimePolling();
         
         try {
@@ -4019,9 +4033,10 @@ function openModal(job) {
             const data = await response.json();
             if (response.ok && data.status !== "error") {
                 modal.classList.add("hide");
+                showToast(`Переоценка завершена: ${getStatusLabel(data.new_status)}, ${data.score}%`, "success");
                 await loadJobs(true);
             } else {
-                showToast("Ошибка при переоценке: " + (data.message || "неизвестная ошибка."), "error");
+                showToast("Ошибка при переоценке: " + (data.detail || data.message || "неизвестная ошибка."), "error");
                 reanalyzeBtn.removeAttribute("disabled");
                 reanalyzeBtn.textContent = "↺ Переоценить";
             }
@@ -4277,6 +4292,21 @@ async function openKeyManager() {
     const modal = document.getElementById("key-manager-modal");
     if (!modal) return;
     
+    // Ключи могли измениться в окне провайдера — берём актуальный пул с сервера перед редактированием
+    try {
+        const settingsRes = await fetch("/api/settings");
+        if (settingsRes.ok) {
+            const fresh = await settingsRes.json();
+            userSettings.gemini_api_keys = fresh.gemini_api_keys;
+            userSettings.mistral_api_keys = fresh.mistral_api_keys;
+            userSettings.openai_api_keys = fresh.openai_api_keys;
+            userSettings.openai_provider_preset = fresh.openai_provider_preset;
+            updateKeysPoolFromSettings(fresh.gemini_api_keys, fresh.mistral_api_keys, fresh.openai_api_keys);
+        }
+    } catch (e) {
+        console.error("Error refreshing keys before opening key manager:", e);
+    }
+
     switchKeyManagerTab(activeKeyManagerTab || "openai");
     modal.classList.remove("hide");
     

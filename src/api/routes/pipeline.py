@@ -11,9 +11,7 @@ router = APIRouter(tags=["Pipeline"])
 
 def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_id: str, dry_run: bool,
                       stop_condition: str = None, limit_applications: int = None, limit_processed: int = None):
-    """Фоновая задача выполнения сканирования."""
-    state.pipeline_status["is_running"] = True
-    state.pipeline_status["stop_requested"] = False
+    """Фоновая задача выполнения сканирования. is_running уже выставлен через try_claim_pipeline()."""
     state.pipeline_status["last_error"] = None
     state.pipeline_status["last_status"] = None
     state.pipeline_status["currently_processing"] = None
@@ -47,19 +45,21 @@ def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_i
         logger.exception(f"Error in pipeline background task: {e}")
         state.pipeline_status["last_error"] = str(e)
     finally:
-        state.pipeline_status["is_running"] = False
-        state.pipeline_status["stop_requested"] = False
-        state.pipeline_status["currently_processing"] = None
+        state.release_pipeline()
 
 @router.post("/api/search")
 def trigger_search(background_tasks: BackgroundTasks):
     """Запускает процесс фонового сканирования."""
-    if state.pipeline_status["is_running"]:
-        return {"status": "error", "message": "Search is already running"}
     if state.login_browser_active:
         return {"status": "error", "message": "Открыто окно входа в hh.ru — завершите вход и закройте его."}
-        
-    settings = get_settings()
+    if not state.try_claim_pipeline():
+        return {"status": "error", "message": "Search is already running"}
+
+    try:
+        settings = get_settings()
+    except Exception:
+        state.release_pipeline()
+        raise
     background_tasks.add_task(
         run_pipeline_task,
         queries=settings["queries"],
