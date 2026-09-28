@@ -261,7 +261,7 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
         # Проверка авторизации перед запуском
         if not hh_client.is_logged_in():
             logger.error("Пользователь не авторизован в браузере. Запуск невозможен. Пройдите авторизацию через интерфейс.")
-            return {"status": "error", "message": "User is not logged in. Open login browser first."}
+            return {"status": "error", "reason": "not_logged_in", "message": "Сессия hh.ru не активна. Войдите заново через кнопку входа."}
             
         # 3. Загрузка резюме пользователя (поддержка режима 'Все резюме')
         is_all_resumes = (not target_resume_id or target_resume_id.lower() in ("all", "__all__"))

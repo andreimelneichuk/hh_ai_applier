@@ -37,7 +37,12 @@ def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_i
         state.pipeline_status["last_run_stats"] = res.get("stats")
         state.pipeline_status["last_status"] = res.get("status")
         if res.get("status") == "error":
-            state.pipeline_status["last_error"] = res.get("message")
+            state.pipeline_status["last_error"] = res.get("message") or res.get("error")
+            if res.get("reason") == "not_logged_in":
+                # Сбрасываем кэш, чтобы UI не показывал "залогинен" при реально слетевшей сессии
+                state.cached_login_status = False
+                state.cached_user_info = None
+                state.last_login_check_time = 0.0
     except Exception as e:
         logger.exception(f"Error in pipeline background task: {e}")
         state.pipeline_status["last_error"] = str(e)

@@ -90,7 +90,10 @@ class HHBrowserClient:
                     break
                 except Exception as e:
                     last_err = e
+                    logger.warning(f"Не удалось запустить браузер через channel='{channel or 'bundled chromium'}': {str(e).splitlines()[0] if str(e) else e}")
                     continue
+            if self.context and not channel:
+                logger.warning("Браузер запущен через встроенный Chromium (fallback). Куки профиля, созданные Chrome, могут не читаться.")
             if not self.context and last_err:
                 logger.error(f"Не удалось запустить браузер ни через один канал: {last_err}")
                 raise last_err
@@ -168,18 +171,37 @@ class HHBrowserClient:
         if not self.context:
             self.start(headless=True)
 
-    def check_session_and_get_info(self) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """Проверяет авторизацию и извлекает информацию о пользователе за один переход."""
+    def check_session_and_get_info(self, attempts: int = 2) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Проверяет авторизацию; при неоднозначном результате (сбой навигации/запуска) повторяет попытку."""
+        is_logged, info = False, None
+        for attempt in range(1, attempts + 1):
+            is_logged, info, conclusive = self._check_session_once()
+            if is_logged or conclusive:
+                return is_logged, info
+            logger.warning(f"Проверка сессии неоднозначна (попытка {attempt}/{attempts}), повтор...")
+            if attempt < attempts:
+                self.stop()
+                time.sleep(1.5)
+        return is_logged, info
+
+    def _check_session_once(self) -> Tuple[bool, Optional[Dict[str, Any]], bool]:
+        """Одна попытка проверки. Возвращает (авторизован, инфо, результат_достоверен)."""
         with self._lock:
             logger.info("Комплексная проверка сессии hh.ru...")
             page = None
             try:
                 self._ensure_started()
                 page = self.context.new_page()
+                nav_ok = True
                 try:
-                    page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
+                    page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=20000)
                 except Exception as goto_err:
+                    nav_ok = False
                     logger.warning(f"Предупреждение навигации при проверке сессии: {goto_err}")
+                try:
+                    page.wait_for_function("() => !!(window.globalVars && window.globalVars.userType)", timeout=7000)
+                except Exception:
+                    pass
                 
                 # 1. Проверяем через глобальный JS-объект hh.ru (самый быстрый и надежный способ)
                 auth_info = {}
@@ -216,9 +238,14 @@ class HHBrowserClient:
                     is_logged = is_auth_via_global and not is_login_page
 
                 if not is_logged:
-                    logger.info(f"Проверка сессии: авторизация не активна (is_auth={is_logged}, userType='{user_type}')")
+                    # Достоверно "не авторизован" только если hh.ru явно ответил anonymous или отправил на логин
+                    conclusive = nav_ok and (user_type == "anonymous" or is_login_page)
+                    logger.info(
+                        f"Проверка сессии: авторизация не активна (userType='{user_type}', url='{page.url}', "
+                        f"nav_ok={nav_ok}, достоверно={conclusive})"
+                    )
                     page.close()
-                    return False, None
+                    return False, None, conclusive
 
                 # Если авторизован, сразу извлекаем email и имя
                 email = str(auth_info.get("login", "")) if auth_info and auth_info.get("login") else "Не указан"
@@ -236,15 +263,16 @@ class HHBrowserClient:
                     "is_applicant": True
                 }
                 logger.info(f"Сессия hh.ru активна. Пользователь: {name} ({email})")
-                return True, user_data
+                return True, user_data, True
             except Exception as e:
                 logger.error(f"Ошибка при комплексной проверке сессии: {e}")
-                if page and not page.is_closed():
+                if page:
                     try:
-                        page.close()
+                        if not page.is_closed():
+                            page.close()
                     except Exception:
                         pass
-                return False, None
+                return False, None, False
 
     def is_logged_in(self) -> bool:
         """Проверяет, авторизован ли пользователь (сессия активна)."""
