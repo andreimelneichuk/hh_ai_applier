@@ -9,6 +9,16 @@ from src.core.paths import get_app_data_dir, get_bundle_dir
 import shutil
 
 DB_PATH = os.getenv("HH_DB_PATH", os.path.join(get_app_data_dir(), "jobs.db"))
+DB_BUSY_TIMEOUT_SEC = 30.0
+
+
+def _connect() -> sqlite3.Connection:
+    """Открывает соединение с БД с ожиданием блокировки.
+
+    Пайплайн пишет в БД из фонового потока параллельно с запросами UI — без таймаута
+    конкурирующая запись сразу падает с "database is locked".
+    """
+    return sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SEC)
 
 DEFAULT_SYSTEM_PROMPT = """Вы — профессиональный IT-рекрутер и эксперт. Оцените соответствие резюме вакансии по 5 шкалам и при совпадении составьте лаконичное сопроводительное письмо.
 
@@ -511,7 +521,7 @@ def merge_from_db(source_db_path: str, target_db_path: str = None) -> int:
 
 def is_vacancy_processed(vacancy_id: str) -> bool:
     """Проверяет, была ли вакансия уже обработана ранее (проигнорирована или отправлена)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM processed_vacancies WHERE id = ?", (vacancy_id,))
     row = cursor.fetchone()
@@ -526,7 +536,7 @@ def save_vacancy(vacancy_id: str, title: str, company: str, status: str,
                  analyzed_by_provider: str = None,
                  analyzed_by_model: str = None):
     """Сохраняет или обновляет информацию о вакансии в базе данных."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
@@ -542,7 +552,7 @@ save_processed_vacancy = save_vacancy
 
 def get_all_processed():
     """Возвращает все записи из базы данных."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM processed_vacancies ORDER BY processed_at ASC")
     rows = cursor.fetchall()
@@ -553,7 +563,7 @@ get_all_vacancies = get_all_processed
 
 def get_processed_paginated(status: Optional[str] = None, limit: int = 20, offset: int = 0):
     """Возвращает отфильтрованные вакансии порциями."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     
     query = "SELECT id, title, company, status, match_score, analysis_reason, cover_letter, questions_data, applied_resume_id, applied_resume_title, processed_at, scores_data, analyzed_by_provider, analyzed_by_model FROM processed_vacancies"
@@ -577,7 +587,7 @@ def get_processed_paginated(status: Optional[str] = None, limit: int = 20, offse
 
 def get_processed_count(status: Optional[str] = None):
     """Возвращает количество вакансий по фильтру."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     
     query = "SELECT COUNT(*) FROM processed_vacancies"
@@ -598,7 +608,7 @@ def get_processed_count(status: Optional[str] = None):
 
 def get_all_counts() -> dict:
     """Возвращает все счетчики одним быстрым агрегирующим запросом."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT 
@@ -625,7 +635,7 @@ def get_all_counts() -> dict:
 
 def get_user_profile_answers() -> list:
     """Возвращает список всех сохраненных профильных ответов."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT key, question_hint, answer, updated_at FROM user_profile_answers ORDER BY updated_at ASC")
     rows = cursor.fetchall()
@@ -634,7 +644,7 @@ def get_user_profile_answers() -> list:
 
 def set_user_profile_answer(key: str, question_hint: str, answer: str):
     """Сохраняет или обновляет профильный ответ."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO user_profile_answers (key, question_hint, answer, updated_at)
@@ -645,7 +655,7 @@ def set_user_profile_answer(key: str, question_hint: str, answer: str):
 
 def delete_user_profile_answer(key: str):
     """Удаляет профильный ответ."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM user_profile_answers WHERE key = ?", (key,))
     conn.commit()
@@ -653,7 +663,7 @@ def delete_user_profile_answer(key: str):
 
 def update_vacancy_questions(vacancy_id: str, questions_data: str, status: Optional[str] = None):
     """Обновляет JSON вопросов и при необходимости статус вакансии."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     if status:
         cursor.execute("UPDATE processed_vacancies SET questions_data = ?, status = ? WHERE id = ?", (questions_data, status, vacancy_id))
@@ -664,7 +674,7 @@ def update_vacancy_questions(vacancy_id: str, questions_data: str, status: Optio
 
 def update_vacancy_status(vacancy_id: str, status: str):
     """Обновляет статус вакансии."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("UPDATE processed_vacancies SET status = ? WHERE id = ?", (status, vacancy_id))
     conn.commit()
@@ -672,15 +682,76 @@ def update_vacancy_status(vacancy_id: str, status: str):
 
 def delete_vacancy(vacancy_id: str):
     """Удаляет запись о вакансии из БД (для повторного анализа)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM processed_vacancies WHERE id = ?", (vacancy_id,))
     conn.commit()
     conn.close()
 
+def _merge_answers_into_questions(questions_data: Optional[str], answers: Dict[str, Any]) -> Optional[str]:
+    """Переносит ответы пользователя {question_id|q_<idx>|текст вопроса: ответ} в JSON questions_data."""
+    try:
+        questions = json.loads(questions_data) if questions_data else []
+    except (TypeError, ValueError):
+        questions = []
+    if not isinstance(questions, list):
+        questions = []
+
+    for idx, q in enumerate(questions):
+        if not isinstance(q, dict):
+            continue
+        for key in (q.get("id"), f"q_{idx}", q.get("question_text") or q.get("text")):
+            if key and key in answers:
+                answer = str(answers[key] if answers[key] is not None else "").strip()
+                if answer != (q.get("answer") or ""):
+                    q["answer"] = answer
+                    q["answered_by_user"] = True
+                    q["requires_user_input"] = not answer
+                break
+    return json.dumps(questions, ensure_ascii=False) if questions else questions_data
+
+
+def update_vacancy_user_data(vacancy_id: str, cover_letter: Optional[str] = None,
+                             answers: Optional[Dict[str, Any]] = None, status: Optional[str] = None) -> bool:
+    """Сохраняет правки пользователя (письмо, ответы на вопросы, статус) одной транзакцией.
+
+    Возвращает False, если вакансии нет в БД.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        # IMMEDIATE: читаем questions_data и пишем обратно без риска потерять параллельное обновление
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT questions_data FROM processed_vacancies WHERE id = ?", (vacancy_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.rollback()
+            return False
+
+        updates, params = [], []
+        if cover_letter is not None:
+            updates.append("cover_letter = ?")
+            params.append(cover_letter)
+        if answers:
+            updates.append("questions_data = ?")
+            params.append(_merge_answers_into_questions(row[0], answers))
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if updates:
+            params.append(vacancy_id)
+            cursor.execute(f"UPDATE processed_vacancies SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 def get_vacancy(vacancy_id: str):
     """Возвращает одну запись о вакансии по ID."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM processed_vacancies WHERE id = ?", (vacancy_id,))
@@ -690,7 +761,7 @@ def get_vacancy(vacancy_id: str):
 
 def set_config_value(key: str, value: str):
     """Сохраняет или обновляет значение конфигурации (например, токены)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO app_config (key, value, updated_at)
@@ -701,7 +772,7 @@ def set_config_value(key: str, value: str):
 
 def get_config_value(key: str) -> str:
     """Возвращает значение конфигурации по ключу."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM app_config WHERE key = ?", (key,))
     row = cursor.fetchone()
@@ -710,7 +781,7 @@ def get_config_value(key: str) -> str:
 
 def set_system_setting(key: str, value: str):
     """Сохраняет системную настройку (например, системный промпт)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO system_settings (key, value, updated_at)
@@ -721,7 +792,7 @@ def set_system_setting(key: str, value: str):
 
 def get_system_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     """Возвращает системную настройку по ключу или дефолтное значение."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
     row = cursor.fetchone()
@@ -732,7 +803,7 @@ def get_system_setting(key: str, default: Optional[str] = None) -> Optional[str]
 
 def get_all_system_settings() -> dict:
     """Возвращает словарь всех системных настроек."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT key, value FROM system_settings")
     rows = cursor.fetchall()
@@ -757,7 +828,7 @@ def save_provider_models(provider: str, models: List[Dict[str, Any]]) -> int:
     """Сохраняет или обновляет список моделей для указанного провайдера в БД."""
     if not models:
         return 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     saved_count = 0
     for m in models:
@@ -811,7 +882,7 @@ def save_provider_models(provider: str, models: List[Dict[str, Any]]) -> int:
 
 def get_provider_models(provider: Optional[str] = None, is_free_only: bool = False, free_only: bool = False) -> List[Dict[str, Any]]:
     """Возвращает сохраненные модели из БД с возможностью фильтрации."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     query = "SELECT provider, model_id, display_name, description, context_window, is_free, is_default, last_synced FROM provider_models"
     params = []
@@ -848,7 +919,7 @@ def set_active_provider_model(provider: str, model_id: str):
     norm_id = "gemini" if provider == "google" else provider
     set_config_value(f"{norm_id}_model", model_id)
     # Также обновляем флаг is_default в таблице provider_models и active_model в providers_config
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("UPDATE provider_models SET is_default = 0 WHERE provider = ?", (norm_id,))
     cursor.execute("UPDATE provider_models SET is_default = 1 WHERE provider = ? AND model_id = ?", (norm_id, model_id))
@@ -876,7 +947,7 @@ def mask_api_key(key: str) -> str:
 
 def get_all_providers_config() -> List[Dict[str, Any]]:
     """Возвращает список всех провайдеров (системных и кастомных) с их настройками."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, name, protocol, base_url, api_keys, active_model, temperature, is_enabled, is_custom, description, get_key_url, metadata, updated_at
@@ -917,7 +988,7 @@ def get_all_providers_config() -> List[Dict[str, Any]]:
 def get_provider_config(provider_id: str) -> Optional[Dict[str, Any]]:
     """Возвращает конфигурацию конкретного провайдера по ID (поддерживает псевдоним google -> gemini)."""
     norm_id = "gemini" if provider_id == "google" else provider_id
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, name, protocol, base_url, api_keys, active_model, temperature, is_enabled, is_custom, description, get_key_url, metadata, updated_at
@@ -979,7 +1050,7 @@ def save_provider_config(provider_id: str, data: Dict[str, Any]) -> Dict[str, An
     description = str(data.get("description", existing["description"])).strip()
     get_key_url = str(data.get("get_key_url", existing["get_key_url"])).strip()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE providers_config
@@ -1027,7 +1098,7 @@ def create_custom_provider(data: Dict[str, Any]) -> Dict[str, Any]:
     description = str(data.get("description", "Пользовательский OpenAI-совместимый провайдер")).strip()
     get_key_url = str(data.get("get_key_url", "")).strip()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO providers_config (
@@ -1051,7 +1122,7 @@ def create_custom_provider(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def delete_custom_provider(provider_id: str) -> bool:
     """Удаляет пользовательский провайдер (системные удалять нельзя)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT is_custom FROM providers_config WHERE id = ?", (provider_id,))
     row = cursor.fetchone()

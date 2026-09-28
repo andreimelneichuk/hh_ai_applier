@@ -153,22 +153,23 @@ def apply_vacancy(payload: ApplyPayload):
     finally:
         hh_client.stop()
     
-    status = "applied" if success else "failed"
-    
-    import sqlite3
-    conn = sqlite3.connect(database.DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE processed_vacancies SET status = ?, cover_letter = ? WHERE id = ?",
-        (status, payload.cover_letter, payload.vacancy_id)
+    if success:
+        status = "already_applied" if err_msg == "ALREADY_APPLIED" else "applied"
+    else:
+        status = "failed"
+
+    # Сохраняем письмо и ответы, которые реально ушли работодателю (или были подготовлены при ошибке)
+    database.update_vacancy_user_data(
+        payload.vacancy_id,
+        cover_letter=payload.cover_letter,
+        answers=payload.answers,
+        status=status
     )
-    conn.commit()
-    conn.close()
     
     if not success:
         raise HTTPException(status_code=400, detail=err_msg)
         
-    return {"status": "ok"}
+    return {"status": "ok", "vacancy_status": status}
 
 @router.post("/api/quick-apply")
 async def quick_apply(payload: QuickApplyPayload):
@@ -231,7 +232,6 @@ async def quick_apply(payload: QuickApplyPayload):
             is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= threshold)
             if not is_eligible and not payload.force and not is_dry_run:
                 # Не отправляем отклик на неподходящую вакансию без явного подтверждения пользователя
-                database.delete_vacancy(vacancy_id)
                 database.save_vacancy(
                     vacancy_id=vacancy_id,
                     title=title,
@@ -279,7 +279,6 @@ async def quick_apply(payload: QuickApplyPayload):
 
             if needs_user_answers:
                 status = "needs_answers"
-                database.delete_vacancy(vacancy_id)
                 database.save_vacancy(
                     vacancy_id=vacancy_id,
                     title=title,
@@ -310,7 +309,6 @@ async def quick_apply(payload: QuickApplyPayload):
                 }
             elif is_dry_run:
                 status = "new"
-                database.delete_vacancy(vacancy_id)
                 database.save_vacancy(
                     vacancy_id=vacancy_id,
                     title=title,
@@ -353,7 +351,6 @@ async def quick_apply(payload: QuickApplyPayload):
                 else:
                     status = "failed"
 
-                database.delete_vacancy(vacancy_id)
                 database.save_vacancy(
                     vacancy_id=vacancy_id,
                     title=title,
@@ -414,8 +411,8 @@ async def reanalyze_vacancy(vacancy_id: str):
         try:
             state.pipeline_status["currently_processing"] = {
                 "id": vacancy_id,
-                "title": row[1] if len(row) > 1 else "Переоценка...",
-                "company": row[2] if len(row) > 2 else ""
+                "title": row["title"] or "Переоценка...",
+                "company": row["company"] or ""
             }
             
             hh_client = HHBrowserClient()
@@ -492,7 +489,6 @@ async def reanalyze_vacancy(vacancy_id: str):
             else:
                 status = "ignored"
             
-            database.delete_vacancy(vacancy_id)
             database.save_vacancy(
                 vacancy_id=vacancy_id,
                 title=vacancy_details.get("title", "Без названия"),
@@ -538,7 +534,8 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
     def _do_generate():
         hh_client = HHBrowserClient()
         try:
-            applied_resume_id = row[8] if row and len(row) > 8 else None
+            # По имени колонки: в БД, мигрированных со старых версий, порядок колонок другой
+            applied_resume_id = row["applied_resume_id"] if row else None
             target_resume_id = applied_resume_id or database.get_config_value("resume_id") or Config.HH_RESUME_ID
             if target_resume_id and target_resume_id.startswith("your_"):
                 target_resume_id = ""
@@ -555,8 +552,8 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
 
             if not details or not details.get("title") or not details.get("description"):
                 details = {
-                    "title": row[1] if row and len(row) > 1 else "Вакансия",
-                    "company": row[2] if row and len(row) > 2 else "",
+                    "title": (row["title"] if row else None) or "Вакансия",
+                    "company": (row["company"] if row else None) or "",
                     "description": "",
                     "skills": []
                 }
@@ -568,15 +565,7 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
             letter = analyzer.generate_cover_letter(chosen_resume_text, details, resumes=candidate_resumes)
 
             if row:
-                import sqlite3
-                conn = sqlite3.connect(database.DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE processed_vacancies SET cover_letter = ? WHERE id = ?",
-                    (letter, vacancy_id)
-                )
-                conn.commit()
-                conn.close()
+                database.update_vacancy_user_data(vacancy_id, cover_letter=letter)
 
             logger.info(f"Сопроводительное письмо для вакансии {vacancy_id} успешно сгенерировано ({len(letter)} симв.).")
             return {
@@ -600,15 +589,8 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
 @router.post("/api/vacancies/{vacancy_id}/save-draft")
 def save_vacancy_draft(vacancy_id: str, payload: SaveDraftPayload):
     """Сохраняет отредактированное пользователем сопроводительное письмо и ответы в БД как черновик."""
-    import sqlite3
-    conn = sqlite3.connect(database.DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE processed_vacancies SET cover_letter = ? WHERE id = ?",
-        (payload.cover_letter, vacancy_id)
-    )
-    conn.commit()
-    conn.close()
+    if not database.update_vacancy_user_data(vacancy_id, cover_letter=payload.cover_letter, answers=payload.answers):
+        raise HTTPException(status_code=404, detail="Вакансия не найдена")
     return {"status": "ok"}
 
 @router.post("/api/reanalyze-all-failed")
@@ -734,7 +716,6 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                     else:
                         status = "ignored"
                     
-                    database.delete_vacancy(vacancy_id)
                     database.save_vacancy(
                         vacancy_id=vacancy_id,
                         title=vacancy_details.get("title", "Без названия"),

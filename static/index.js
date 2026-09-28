@@ -3866,9 +3866,14 @@ function openModal(job) {
                 item.style.cssText = "background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px;";
                 
                 const isUserReq = q.requires_user_input;
-                const badgeHtml = isUserReq 
-                    ? `<span class="badge" style="background: rgba(239,68,68,0.2); color: #f87171; font-size: 10px; padding: 2px 6px;">⚠️ Требуется ваш ответ</span>`
-                    : `<span class="badge" style="background: rgba(16,185,129,0.2); color: #34d399; font-size: 10px; padding: 2px 6px;">✨ ИИ уверен (${q.confidence || 90}%)</span>`;
+                let badgeHtml;
+                if (isUserReq) {
+                    badgeHtml = `<span class="badge" style="background: rgba(239,68,68,0.2); color: #f87171; font-size: 10px; padding: 2px 6px;">⚠️ Требуется ваш ответ</span>`;
+                } else if (q.answered_by_user) {
+                    badgeHtml = `<span class="badge" style="background: rgba(56,189,248,0.2); color: #7dd3fc; font-size: 10px; padding: 2px 6px;">✍️ Ваш ответ</span>`;
+                } else {
+                    badgeHtml = `<span class="badge" style="background: rgba(16,185,129,0.2); color: #34d399; font-size: 10px; padding: 2px 6px;">✨ ИИ уверен (${q.confidence || 90}%)</span>`;
+                }
                 
                 item.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px;">
@@ -3919,21 +3924,34 @@ function openModal(job) {
     };
     updateLetterBtnState();
     textarea.oninput = updateLetterBtnState;
-    textarea.onblur = async () => {
-        const text = textarea.value.trim();
-        if (job.status !== "applied" && job.status !== "already_applied") {
-            try {
-                await fetch(`/api/vacancies/${job.id}/save-draft`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ cover_letter: text })
-                });
-                job.cover_letter = text;
-            } catch (e) {
-                console.error("Auto-save draft error:", e);
-            }
+
+    // Автосохранение черновика: письмо и ответы на вопросы работодателя
+    let lastSavedDraft = JSON.stringify({ cover_letter: (job.cover_letter || "").trim(), answers: collectModalAnswers() });
+    const saveDraft = async () => {
+        if (job.status === "applied" || job.status === "already_applied") return;
+        const draft = { cover_letter: textarea.value.trim(), answers: collectModalAnswers() };
+        const serialized = JSON.stringify(draft);
+        if (serialized === lastSavedDraft) return;
+        try {
+            const res = await fetch(`/api/vacancies/${job.id}/save-draft`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: serialized
+            });
+            if (!res.ok) return;
+            lastSavedDraft = serialized;
+            job.cover_letter = draft.cover_letter;
+            applyAnswersToJob(job, draft.answers);
+        } catch (e) {
+            console.error("Auto-save draft error:", e);
         }
     };
+    textarea.onblur = saveDraft;
+    if (qList) {
+        qList.onfocusout = (e) => {
+            if (e.target && e.target.classList.contains("question-answer-input")) saveDraft();
+        };
+    }
 
     if (genLetterBtn) {
         genLetterBtn.onclick = async () => {
@@ -3976,14 +3994,7 @@ function openModal(job) {
         }
         
         // Сбор ответов на вопросы
-        const answersDict = {};
-        const qInputs = document.querySelectorAll("#modal-questions-list textarea, #modal-questions-list input");
-        qInputs.forEach(inp => {
-            const qid = inp.getAttribute("data-qid") || inp.getAttribute("data-qtext");
-            if (qid) {
-                answersDict[qid] = inp.value.trim();
-            }
-        });
+        const answersDict = collectModalAnswers();
 
         applyBtn.setAttribute("disabled", "true");
         applyBtn.textContent = "Отправка...";
@@ -4053,6 +4064,39 @@ function openModal(job) {
     };
     
     modal.classList.remove("hide");
+}
+
+// Ответы на вопросы работодателя из модального окна вакансии: { question_id: answer }
+function collectModalAnswers() {
+    const answers = {};
+    document.querySelectorAll("#modal-questions-list textarea, #modal-questions-list input").forEach(inp => {
+        const qid = inp.getAttribute("data-qid") || inp.getAttribute("data-qtext");
+        if (qid) answers[qid] = inp.value.trim();
+    });
+    return answers;
+}
+
+// Обновляет ответы в локальной копии вакансии, чтобы при повторном открытии модалки не показывались старые
+function applyAnswersToJob(job, answers) {
+    if (!job.questions_data || !answers) return;
+    let questions;
+    try {
+        questions = typeof job.questions_data === "string" ? JSON.parse(job.questions_data) : job.questions_data;
+    } catch (e) {
+        return;
+    }
+    if (!Array.isArray(questions)) return;
+    questions.forEach((q, idx) => {
+        const key = [q.id, `q_${idx}`, q.question_text || q.text].find(k => k && k in answers);
+        if (key && answers[key] !== (q.answer || "")) {
+            q.answer = answers[key];
+            q.answered_by_user = true;
+            q.requires_user_input = !answers[key];
+        }
+    });
+    job.questions_data = questions;
+    const found = currentJobs.find(j => String(j.id) === String(job.id));
+    if (found && found !== job) found.questions_data = questions;
 }
 
 function updateProcessingStatus(pipeline) {
