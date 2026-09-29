@@ -7,6 +7,7 @@ from src.core.paths import get_app_data_dir, get_bundle_dir
 from src.db import database
 from src.clients.browser import HHBrowserClient
 from src.clients.llm import LLMAnalyzer, QuotaExceededError
+from src.pipeline.processing import decide_and_apply
 
 # Настройка логирования
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -488,134 +489,43 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                     stats["failed"] += 1
                     continue
                 
-                chosen_resume_id = analysis.selected_resume_id or (candidate_resumes[0]["id"] if candidate_resumes else target_resume_id)
-                chosen_resume_title = analysis.selected_resume_title or (candidate_resumes[0]["title"] if candidate_resumes else "Резюме")
-                
-                # Находим текст выбранного резюме для возможных ответов на вопросы
-                chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"] if candidate_resumes else "")
+                decision = decide_and_apply(
+                    hh_client, analyzer, vacancy_id, details, analysis, candidate_resumes,
+                    threshold=target_threshold,
+                    dry_run=target_dry_run,
+                    user_saved_answers=user_saved_answers,
+                    should_stop=should_stop
+                )
 
-                # Сериализуем данные по 5 шкалам для сохранения в БД и отображения в UI
-                scores_json_str = None
-                if analysis.scores:
-                    import json
-                    scores_payload = analysis.scores.model_dump()
-                    scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
-                    scores_payload["blocker_reason"] = analysis.blocker_reason
-                    scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
-
-                # Строгая проверка порога и отсутствия блокирующих факторов
-                is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
-
-                if is_eligible:
+                if decision.is_eligible:
                     stats["matched"] += 1
-                    logger.info(f"ВАКАНСИЯ ПОДХОДИТ! Совпадение: {analysis.match_score}% (порог: {target_threshold}%). Выбранное резюме: '{chosen_resume_title}' (ID: {chosen_resume_id})")
+                    logger.info(f"ВАКАНСИЯ ПОДХОДИТ! Совпадение: {analysis.match_score}% (порог: {target_threshold}%). Выбранное резюме: '{decision.resume_title}' (ID: {decision.resume_id})")
                     logger.info(f"Причина: {analysis.reasoning}")
-                    
-                    # Проверяем остановку перед откликом
-                    if should_stop and should_stop():
+                    if decision.stopped:
                         logger.info("Обработка вакансий остановлена перед откликом.")
                         stopped_by_user = True
                         break
-
-                    # Проверяем наличие вопросов/теста от работодателя
-                    questions = hh_client.get_vacancy_questions(vacancy_id)
-                    questions_data_str = None
-                    answers_dict = None
-                    needs_user_answers = False
-
-                    if questions:
-                        logger.info(f"Обнаружено {len(questions)} вопросов от работодателя. Генерация ответов через ИИ на основе резюме '{chosen_resume_title}'...")
-                        import json
-                        q_res = analyzer.answer_questions(chosen_resume_text, details, questions, user_saved_answers)
-                        questions_data_str = json.dumps([a.model_dump() for a in q_res.answers], ensure_ascii=False)
-                        answers_dict = {a.id: a.answer for a in q_res.answers}
-                        
-                        if not q_res.all_confident or any(a.requires_user_input or a.confidence < 85 for a in q_res.answers):
-                            logger.info(f"Вопросы требуют личного подтверждения кандидата. Перевод в статус 'needs_answers'.")
-                            needs_user_answers = True
-
-                    # Откликаемся или сохраняем как готовую к отклику при Dry Run / needs_answers
-                    if needs_user_answers:
-                        status = "needs_answers"
+                    if decision.status == "needs_answers":
                         logger.info(f"Вакансия {vacancy_id} сохранена со статусом 'needs_answers' (требуются ответы).")
-                    elif target_dry_run:
-                        logger.info(f"[Dry Run] Вакансия сохранена как релевантная (статус: new). Отклик не отправлялся.")
-                        status = "new"
+                    elif decision.status == "new":
+                        logger.info("[Dry Run] Вакансия сохранена как релевантная (статус: new). Отклик не отправлялся.")
+                    elif decision.status == "applied":
+                        stats["applied"] += 1
+                        logger.info(f"Успешный отклик отправлен с резюме '{decision.resume_title}'.")
+                    elif decision.status == "already_applied":
+                        logger.info("Уже откликнулись ранее.")
                     else:
-                        if not chosen_resume_id or chosen_resume_id == "local":
-                            logger.error(f"Невозможно отправить отклик на {vacancy_id}: Резюме не выбрано или только локальный файл!")
-                            database.save_vacancy(
-                                vacancy_id=vacancy_id,
-                                title=title,
-                                company=company,
-                                status="failed",
-                                match_score=analysis.match_score,
-                                analysis_reason="Резюме не найдено в профиле HH для отклика",
-                                cover_letter=analysis.cover_letter,
-                                questions_data=questions_data_str,
-                                applied_resume_id=chosen_resume_id,
-                                applied_resume_title=chosen_resume_title,
-                                scores_data=scores_json_str
-                            )
-                            stats["failed"] += 1
-                            continue
-                            
-                        success, err_msg = hh_client.apply_to_vacancy(
-                            vacancy_id=vacancy_id,
-                            resume_title_or_id=chosen_resume_id,
-                            cover_letter=analysis.cover_letter,
-                            answers=answers_dict,
-                            dry_run=False
-                        )
-                        
-                        if success:
-                            if err_msg == "ALREADY_APPLIED":
-                                status = "already_applied"
-                                logger.info(f"Уже откликнулись ранее.")
-                            else:
-                                status = "applied"
-                                stats["applied"] += 1
-                                logger.info(f"Успешный отклик отправлен с резюме '{chosen_resume_title}'.")
-                        else:
-                            status = "failed"
-                            stats["failed"] += 1
-                            logger.error(f"Ошибка отклика на {vacancy_id}: {err_msg}")
-                        
-                    database.save_vacancy(
-                        vacancy_id=vacancy_id,
-                        title=title,
-                        company=company,
-                        status=status,
-                        match_score=analysis.match_score,
-                        analysis_reason=analysis.reasoning,
-                        cover_letter=analysis.cover_letter,
-                        questions_data=questions_data_str,
-                        applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title,
-                        scores_data=scores_json_str,
-                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                    )
+                        stats["failed"] += 1
+                        logger.error(f"Ошибка отклика на {vacancy_id}: {decision.error or decision.apply_error}")
                 else:
                     stats["ignored"] += 1
                     blocker_msg = f" [Блокер: {analysis.blocker_reason}]" if analysis.has_hard_blocker and analysis.blocker_reason else ""
-                    logger.info(f"Вакансию пропускаем. Совпадение: {analysis.match_score}% (порог: {target_threshold}%){blocker_msg}. Резюме: {chosen_resume_title}")
+                    logger.info(f"Вакансию пропускаем. Совпадение: {analysis.match_score}% (порог: {target_threshold}%){blocker_msg}. Резюме: {decision.resume_title}")
                     logger.info(f"Причина отсева: {analysis.reasoning}")
-                    
-                    database.save_vacancy(
-                        vacancy_id=vacancy_id,
-                        title=title,
-                        company=company,
-                        status="ignored",
-                        match_score=analysis.match_score,
-                        analysis_reason=analysis.reasoning,
-                        cover_letter="",
-                        applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title,
-                        scores_data=scores_json_str,
-                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                    )
+                    # Письмо для неподходящей вакансии не нужно
+                    decision.cover_letter = ""
+
+                decision.save(vacancy_id, title, company)
 
                 # Проверка достижения лимитов сразу после завершения обработки вакансии
                 effective_applied = stats["applied"] if not target_dry_run else stats["matched"]

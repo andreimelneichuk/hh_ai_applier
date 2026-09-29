@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -7,6 +6,7 @@ from src.db import database
 from src.clients.browser import HHBrowserClient, BrowserBusyError
 from src.clients.llm import LLMAnalyzer, QuotaExceededError
 from src.pipeline.runner import format_hh_resume_to_text, load_resume_text
+from src.pipeline.processing import decide_and_apply
 from src.api.state import (
     ApplyPayload,
     QuickApplyPayload,
@@ -57,6 +57,26 @@ def load_candidate_resumes(hh_client: HHBrowserClient, target_resume_id: str = N
                 "text": local_text
             })
             
+    return candidate_resumes
+
+def _target_resume_id(preferred: str = None) -> str:
+    target = preferred or database.get_config_value("resume_id") or Config.HH_RESUME_ID
+    return "" if target and target.startswith("your_") else target
+
+def _match_threshold() -> int:
+    value = database.get_config_value("match_threshold")
+    return int(value) if value else Config.MATCH_THRESHOLD
+
+def _is_dry_run() -> bool:
+    value = database.get_config_value("dry_run")
+    return value.lower() in ("true", "1", "yes") if value is not None else Config.DRY_RUN
+
+RESUME_NOT_FOUND = "Резюме не найдено ни в профиле HH, ни локально. Выберите резюме в настройках."
+
+def _require_resumes(hh_client: HHBrowserClient, target_resume_id: str) -> List[Dict[str, Any]]:
+    candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
+    if not candidate_resumes:
+        raise HTTPException(status_code=400, detail=RESUME_NOT_FOUND)
     return candidate_resumes
 
 def extract_vacancy_id_from_url(url_or_id: str) -> str:
@@ -113,11 +133,7 @@ async def get_vacancy_questions(vacancy_id: str):
             if not questions:
                 return {"questions": [], "answers": []}
                 
-            target_resume_id = database.get_config_value("resume_id") or Config.HH_RESUME_ID
-            if target_resume_id and target_resume_id.startswith("your_"):
-                target_resume_id = ""
-                
-            candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
+            candidate_resumes = load_candidate_resumes(hh_client, _target_resume_id())
             resume_text = candidate_resumes[0]["text"] if candidate_resumes else ""
                 
             details = hh_client.get_vacancy_details(vacancy_id) or {"title": "", "company": ""}
@@ -182,23 +198,16 @@ async def quick_apply(payload: QuickApplyPayload):
     def _do_quick_apply():
         hh_client = HHBrowserClient()
         try:
-            target_resume_id = payload.resume_id or database.get_config_value("resume_id") or Config.HH_RESUME_ID
-            if target_resume_id and target_resume_id.startswith("your_"):
-                target_resume_id = ""
-                
-            candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
-            if not candidate_resumes:
-                return {"status": "error", "message": "Резюме не найдено ни в профиле HH, ни локально"}
+            candidate_resumes = _require_resumes(hh_client, _target_resume_id(payload.resume_id))
 
             details = hh_client.get_vacancy_details(vacancy_id)
             if not details or not details.get("title"):
-                return {"status": "error", "message": f"Не удалось получить информацию о вакансии {vacancy_id}"}
+                raise HTTPException(status_code=404, detail=f"Вакансия {vacancy_id} не найдена на hh.ru или недоступна")
 
             title = details.get("title", "Без названия")
             company = details.get("company", "")
-
-            threshold_str = database.get_config_value("match_threshold")
-            threshold = int(threshold_str) if threshold_str else Config.MATCH_THRESHOLD
+            threshold = _match_threshold()
+            is_dry_run = _is_dry_run()
 
             analyzer = LLMAnalyzer()
             try:
@@ -206,195 +215,70 @@ async def quick_apply(payload: QuickApplyPayload):
             except Exception as e:
                 logger.warning(f"LLM ошибка при быстром отклике ({e}). Используем базовое сопроводительное письмо.")
                 analysis = analyzer._mock_analysis(details, match_threshold=threshold, resumes=candidate_resumes)
-            
-            chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
-            chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
-            chosen_resume_text = next((r.get("text", "") for r in candidate_resumes if r.get("id") == chosen_resume_id), candidate_resumes[0].get("text", ""))
-            user_letter = (payload.cover_letter or "").strip()
-            cover_letter = user_letter or analysis.cover_letter
+
+            cover_letter = (payload.cover_letter or "").strip() or analysis.cover_letter
             if not cover_letter or not cover_letter.strip():
-                cover_letter = analyzer.generate_cover_letter(chosen_resume_text, details, resumes=candidate_resumes)
-            postfix = database.get_system_setting("cover_letter_postfix") or ""
-            if postfix and postfix.strip() and not cover_letter.endswith(postfix.strip()):
-                cover_letter = f"{cover_letter.strip()}\n\n{postfix.strip()}"
+                chosen_text = next((r.get("text", "") for r in candidate_resumes if r.get("id") == analysis.selected_resume_id), candidate_resumes[0].get("text", ""))
+                cover_letter = analyzer.generate_cover_letter(chosen_text, details, resumes=candidate_resumes)
+            postfix = (database.get_system_setting("cover_letter_postfix") or "").strip()
+            if postfix and not cover_letter.endswith(postfix):
+                cover_letter = f"{cover_letter.strip()}\n\n{postfix}"
 
-            scores_json_str = None
-            scores_dict = None
-            if analysis.scores:
-                scores_dict = analysis.scores.model_dump()
-                scores_dict["has_hard_blocker"] = analysis.has_hard_blocker
-                scores_dict["blocker_reason"] = analysis.blocker_reason
-                scores_json_str = json.dumps(scores_dict, ensure_ascii=False)
+            # В Dry Run отклик не уходит, поэтому неподходящую вакансию можно подготовить без подтверждения
+            decision = decide_and_apply(
+                hh_client, analyzer, vacancy_id, details, analysis, candidate_resumes,
+                threshold=threshold,
+                dry_run=is_dry_run,
+                cover_letter=cover_letter,
+                force=payload.force or is_dry_run,
+                allow_local_resume=True
+            )
+            decision.save(vacancy_id, title, company)
 
-            dry_run_val = database.get_config_value("dry_run")
-            is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
-
-            is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= threshold)
-            if not is_eligible and not payload.force and not is_dry_run:
+            response = {
+                "vacancy_id": vacancy_id,
+                "title": title,
+                "company": company,
+                "match_score": analysis.match_score,
+                "reasoning": analysis.reasoning,
+                "cover_letter": decision.cover_letter,
+                "questions_data": decision.question_answers,
+                "applied_resume_id": decision.resume_id,
+                "applied_resume_title": decision.resume_title,
+                "scores_data": decision.scores,
+            }
+            if decision.status == "ignored":
                 # Не отправляем отклик на неподходящую вакансию без явного подтверждения пользователя
-                database.save_vacancy(
-                    vacancy_id=vacancy_id,
-                    title=title,
-                    company=company,
-                    status="ignored",
-                    match_score=analysis.match_score,
-                    analysis_reason=analysis.reasoning,
-                    cover_letter=cover_letter,
-                    questions_data=None,
-                    applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title,
-                    scores_data=scores_json_str,
-                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                )
                 return {
+                    **response,
                     "status": "not_eligible",
-                    "vacancy_id": vacancy_id,
-                    "title": title,
-                    "company": company,
-                    "match_score": analysis.match_score,
                     "threshold": threshold,
                     "has_hard_blocker": analysis.has_hard_blocker,
                     "blocker_reason": analysis.blocker_reason,
-                    "reasoning": analysis.reasoning,
-                    "cover_letter": cover_letter,
                     "message": "Вакансия не прошла порог соответствия — отклик не отправлен."
                 }
-
-            questions = hh_client.get_vacancy_questions(vacancy_id)
-            questions_data_str = None
-            answers_dict = None
-            needs_user_answers = False
-            q_answers_list = []
-
-            if questions and isinstance(questions, list) and len(questions) > 0:
-                user_saved_answers = database.get_user_profile_answers()
-                q_res = analyzer.answer_questions(chosen_resume_text, details, questions, user_saved_answers)
-                q_answers_list = [a.model_dump() for a in q_res.answers]
-                questions_data_str = json.dumps(q_answers_list, ensure_ascii=False)
-                answers_dict = {a.id: a.answer for a in q_res.answers}
-
-                if not q_res.all_confident or any(a.requires_user_input or a.confidence < 85 for a in q_res.answers):
-                    needs_user_answers = True
-
-            if needs_user_answers:
-                status = "needs_answers"
-                database.save_vacancy(
-                    vacancy_id=vacancy_id,
-                    title=title,
-                    company=company,
-                    status=status,
-                    match_score=analysis.match_score,
-                    analysis_reason=analysis.reasoning,
-                    cover_letter=cover_letter,
-                    questions_data=questions_data_str,
-                    applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title,
-                    scores_data=scores_json_str,
-                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                )
-                return {
-                    "status": "needs_answers",
-                    "vacancy_id": vacancy_id,
-                    "title": title,
-                    "company": company,
-                    "match_score": analysis.match_score,
-                    "reasoning": analysis.reasoning,
-                    "cover_letter": cover_letter,
-                    "questions_data": q_answers_list,
-                    "applied_resume_id": chosen_resume_id,
-                    "applied_resume_title": chosen_resume_title,
-                    "message": f"ИИ выбрал резюме '{chosen_resume_title}' и подготовил ответы, но некоторые требуют вашей проверки перед отправкой."
-                }
-            elif is_dry_run:
-                status = "new"
-                database.save_vacancy(
-                    vacancy_id=vacancy_id,
-                    title=title,
-                    company=company,
-                    status=status,
-                    match_score=analysis.match_score,
-                    analysis_reason=analysis.reasoning,
-                    cover_letter=cover_letter,
-                    questions_data=questions_data_str,
-                    applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title,
-                    scores_data=scores_json_str,
-                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                )
-                return {
-                    "status": "dry_run",
-                    "vacancy_id": vacancy_id,
-                    "title": title,
-                    "company": company,
-                    "match_score": analysis.match_score,
-                    "reasoning": analysis.reasoning,
-                    "cover_letter": cover_letter,
-                    "questions_data": q_answers_list,
-                    "applied_resume_id": chosen_resume_id,
-                    "applied_resume_title": chosen_resume_title,
-                    "scores_data": scores_dict,
-                    "message": f"[Тестовый режим Dry Run] Отклик сформирован для резюме '{chosen_resume_title}' и сохранен."
-                }
-            else:
-                success, err_msg = hh_client.apply_to_vacancy(
-                    vacancy_id=vacancy_id,
-                    resume_title_or_id=chosen_resume_id,
-                    cover_letter=cover_letter,
-                    answers=answers_dict,
-                    dry_run=False
-                )
-                if success:
-                    status = "already_applied" if err_msg == "ALREADY_APPLIED" else "applied"
-                else:
-                    status = "failed"
-
-                database.save_vacancy(
-                    vacancy_id=vacancy_id,
-                    title=title,
-                    company=company,
-                    status=status,
-                    match_score=analysis.match_score,
-                    analysis_reason=analysis.reasoning,
-                    cover_letter=cover_letter,
-                    questions_data=questions_data_str,
-                    applied_resume_id=chosen_resume_id,
-                    applied_resume_title=chosen_resume_title,
-                    scores_data=scores_json_str,
-                    analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                    analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                )
-
-                if not success:
-                    return {"status": "error", "message": f"Ошибка отправки отклика: {err_msg}"}
-
-                return {
-                    "status": status,
-                    "vacancy_id": vacancy_id,
-                    "title": title,
-                    "company": company,
-                    "match_score": analysis.match_score,
-                    "cover_letter": cover_letter,
-                    "questions_data": q_answers_list,
-                    "applied_resume_id": chosen_resume_id,
-                    "applied_resume_title": chosen_resume_title,
-                    "scores_data": scores_dict,
-                    "message": f"Отклик с резюме '{chosen_resume_title}' и ответы успешно отправлены работодателю!"
-                }
-        except BrowserBusyError:
-            raise
-        except Exception as e:
-            logger.error(f"Ошибка в quick_apply: {e}", exc_info=True)
-            return {"status": "error", "message": str(e)}
+            if decision.status == "needs_answers":
+                return {**response, "status": "needs_answers",
+                        "message": f"ИИ выбрал резюме '{decision.resume_title}' и подготовил ответы, но некоторые требуют вашей проверки перед отправкой."}
+            if decision.status == "new":
+                return {**response, "status": "dry_run",
+                        "message": f"[Тестовый режим Dry Run] Отклик сформирован для резюме '{decision.resume_title}' и сохранен."}
+            if decision.status == "failed":
+                if decision.error:
+                    raise HTTPException(status_code=400, detail=decision.error)
+                raise HTTPException(status_code=502, detail=f"hh.ru не принял отклик: {decision.apply_error}")
+            return {**response, "status": decision.status,
+                    "message": f"Отклик с резюме '{decision.resume_title}' и ответы успешно отправлены работодателю!"}
         finally:
             hh_client.stop()
 
-    result = await run_in_clean_thread(_do_quick_apply)
-    if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("message", "Ошибка"))
-    return result
+    try:
+        return await run_in_clean_thread(_do_quick_apply)
+    except (HTTPException, BrowserBusyError):
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка в quick_apply: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/api/reanalyze/{vacancy_id}")
 async def reanalyze_vacancy(vacancy_id: str):
@@ -408,122 +292,46 @@ async def reanalyze_vacancy(vacancy_id: str):
         raise HTTPException(status_code=409, detail="Сканирование или переоценка уже запущены, подождите")
     
     def run_reanalyze():
+        hh_client = HHBrowserClient()
         try:
             state.pipeline_status["currently_processing"] = {
                 "id": vacancy_id,
                 "title": row["title"] or "Переоценка...",
                 "company": row["company"] or ""
             }
-            
-            hh_client = HHBrowserClient()
-            target_resume_id = database.get_config_value("resume_id") or Config.HH_RESUME_ID
-            if target_resume_id and target_resume_id.startswith("your_"):
-                target_resume_id = ""
-                
-            candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
-            if not candidate_resumes:
-                return {"status": "error", "message": "Резюме не найдено ни в профиле HH, ни локально"}
+            candidate_resumes = _require_resumes(hh_client, _target_resume_id())
 
             vacancy_details = hh_client.get_vacancy_details(vacancy_id)
             if not vacancy_details or not vacancy_details.get("description"):
                 logger.error(f"Не удалось получить детали вакансии {vacancy_id}")
-                return {"status": "error", "message": "Не удалось получить детали вакансии с hh.ru"}
-            
-            target_threshold_str = database.get_config_value("match_threshold")
-            target_threshold = int(target_threshold_str) if target_threshold_str else Config.MATCH_THRESHOLD
+                raise HTTPException(status_code=404, detail="Вакансия не найдена на hh.ru или недоступна")
 
+            threshold = _match_threshold()
             analyzer = LLMAnalyzer()
-            analysis = analyzer.analyze_vacancy(
-                resumes=candidate_resumes,
-                vacancy=vacancy_details,
-                threshold=target_threshold
+            analysis = analyzer.analyze_vacancy(resumes=candidate_resumes, vacancy=vacancy_details, threshold=threshold)
+            decision = decide_and_apply(
+                hh_client, analyzer, vacancy_id, vacancy_details, analysis, candidate_resumes,
+                threshold=threshold,
+                dry_run=_is_dry_run()
             )
-            
-            chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
-            chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
-            chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"])
-
-            scores_json_str = None
-            if analysis.scores:
-                scores_payload = analysis.scores.model_dump()
-                scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
-                scores_payload["blocker_reason"] = analysis.blocker_reason
-                scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
-
-            dry_run_val = database.get_config_value("dry_run")
-            is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
-
-            questions_data_str = None
-            answers_dict = None
-            needs_user_answers = False
-
-            is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
-
-            if is_eligible:
-                questions = hh_client.get_vacancy_questions(vacancy_id)
-                if questions and isinstance(questions, list) and len(questions) > 0:
-                    user_saved_answers = database.get_user_profile_answers()
-                    q_res = analyzer.answer_questions(chosen_resume_text, vacancy_details, questions, user_saved_answers)
-                    questions_data_str = json.dumps([a.model_dump() for a in q_res.answers], ensure_ascii=False)
-                    answers_dict = {a.id: a.answer for a in q_res.answers}
-                    if not q_res.all_confident or any(a.requires_user_input or a.confidence < 85 for a in q_res.answers):
-                        needs_user_answers = True
-
-                if needs_user_answers:
-                    status = "needs_answers"
-                elif is_dry_run:
-                    status = "new"
-                else:
-                    logger.info(f"Режим Dry Run выключен. Отправляем боевой отклик на {vacancy_id}...")
-                    success, err_msg = hh_client.apply_to_vacancy(
-                        vacancy_id=vacancy_id,
-                        resume_title_or_id=chosen_resume_id,
-                        cover_letter=analysis.cover_letter,
-                        answers=answers_dict,
-                        dry_run=False
-                    )
-                    if success:
-                        status = "already_applied" if err_msg == "ALREADY_APPLIED" else "applied"
-                    else:
-                        status = "failed"
-            else:
-                status = "ignored"
-            
-            database.save_vacancy(
-                vacancy_id=vacancy_id,
-                title=vacancy_details.get("title", "Без названия"),
-                company=vacancy_details.get("company", ""),
-                status=status,
-                match_score=analysis.match_score,
-                analysis_reason=analysis.reasoning,
-                cover_letter=analysis.cover_letter,
-                questions_data=questions_data_str,
-                applied_resume_id=chosen_resume_id,
-                applied_resume_title=chosen_resume_title,
-                scores_data=scores_json_str,
-                analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-            )
-            logger.info(f"Переоценка вакансии {vacancy_id}: статус={status}, score={analysis.match_score}, резюме={chosen_resume_title}")
-            return {"status": "ok", "new_status": status, "score": analysis.match_score, "resume": chosen_resume_title}
-        except BrowserBusyError:
-            raise
-        except Exception as e:
-            logger.error(f"Ошибка при переоценке вакансии {vacancy_id}: {e}", exc_info=True)
-            return {"status": "error", "message": str(e)}
+            decision.save(vacancy_id, vacancy_details.get("title", "Без названия"), vacancy_details.get("company", ""))
+            logger.info(f"Переоценка вакансии {vacancy_id}: статус={decision.status}, score={analysis.match_score}, резюме={decision.resume_title}")
+            return {"status": "ok", "new_status": decision.status, "score": analysis.match_score, "resume": decision.resume_title}
         finally:
-            if 'hh_client' in locals():
-                hh_client.stop()
+            hh_client.stop()
             state.pipeline_status["currently_processing"] = None
-    
+
     try:
-        result = await run_in_clean_thread(run_reanalyze)
+        return await run_in_clean_thread(run_reanalyze)
+    except (HTTPException, BrowserBusyError):
+        raise
+    except QuotaExceededError as e:
+        raise HTTPException(status_code=429, detail=f"Превышена квота запросов к ИИ: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при переоценке вакансии {vacancy_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         state.release_pipeline()
-    if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result["message"])
-    
-    return result
 
 @router.post("/api/generate-cover-letter/{vacancy_id}")
 async def generate_cover_letter_endpoint(vacancy_id: str):
@@ -536,13 +344,7 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
         try:
             # По имени колонки: в БД, мигрированных со старых версий, порядок колонок другой
             applied_resume_id = row["applied_resume_id"] if row else None
-            target_resume_id = applied_resume_id or database.get_config_value("resume_id") or Config.HH_RESUME_ID
-            if target_resume_id and target_resume_id.startswith("your_"):
-                target_resume_id = ""
-
-            candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
-            if not candidate_resumes:
-                return {"status": "error", "message": "Резюме не найдено ни в профиле HH, ни локально"}
+            candidate_resumes = _require_resumes(hh_client, _target_resume_id(applied_resume_id))
 
             details = None
             try:
@@ -573,18 +375,18 @@ async def generate_cover_letter_endpoint(vacancy_id: str):
                 "cover_letter": letter,
                 "vacancy_id": vacancy_id
             }
-        except BrowserBusyError:
-            raise
-        except Exception as e:
-            logger.error(f"Ошибка при генерации сопроводительного письма для {vacancy_id}: {e}", exc_info=True)
-            return {"status": "error", "message": str(e)}
         finally:
             hh_client.stop()
 
-    result = await run_in_clean_thread(_do_generate)
-    if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("message", "Ошибка генерации письма"))
-    return result
+    try:
+        return await run_in_clean_thread(_do_generate)
+    except (HTTPException, BrowserBusyError):
+        raise
+    except QuotaExceededError as e:
+        raise HTTPException(status_code=429, detail=f"Превышена квота запросов к ИИ: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при генерации сопроводительного письма для {vacancy_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e) or "Ошибка генерации письма")
 
 @router.post("/api/vacancies/{vacancy_id}/save-draft")
 def save_vacancy_draft(vacancy_id: str, payload: SaveDraftPayload):
@@ -621,11 +423,7 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
         
         try:
             hh_client.start()
-            target_resume_id = database.get_config_value("resume_id") or Config.HH_RESUME_ID
-            if target_resume_id and target_resume_id.startswith("your_"):
-                target_resume_id = ""
-                
-            candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
+            candidate_resumes = load_candidate_resumes(hh_client, _target_resume_id())
             if not candidate_resumes:
                 logger.error("Резюме не найдено при переоценке.")
                 state.pipeline_status["last_error"] = "Резюме не найдено при переоценке"
@@ -656,85 +454,34 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                         stopped_by_user = True
                         break
 
-                    target_threshold_str = database.get_config_value("match_threshold")
-                    target_threshold = int(target_threshold_str) if target_threshold_str else Config.MATCH_THRESHOLD
-
+                    threshold = _match_threshold()
                     analysis = analyzer.analyze_vacancy(
                         resumes=candidate_resumes,
                         vacancy=vacancy_details,
-                        threshold=target_threshold
+                        threshold=threshold
                     )
-                    
-                    chosen_resume_id = analysis.selected_resume_id or candidate_resumes[0]["id"]
-                    chosen_resume_title = analysis.selected_resume_title or candidate_resumes[0]["title"]
-                    chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"])
-
-                    scores_json_str = None
-                    if analysis.scores:
-                        scores_payload = analysis.scores.model_dump()
-                        scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
-                        scores_payload["blocker_reason"] = analysis.blocker_reason
-                        scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
-
-                    dry_run_val = database.get_config_value("dry_run")
-                    is_dry_run = dry_run_val.lower() in ("true", "1", "yes") if dry_run_val is not None else Config.DRY_RUN
-
-                    questions_data_str = None
-                    answers_dict = None
-                    needs_user_answers = False
-
-                    is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
-
-                    if is_eligible:
-                        questions = hh_client.get_vacancy_questions(vacancy_id)
-                        if questions and isinstance(questions, list) and len(questions) > 0:
-                            q_res = analyzer.answer_questions(chosen_resume_text, vacancy_details, questions, user_saved_answers)
-                            questions_data_str = json.dumps([a.model_dump() for a in q_res.answers], ensure_ascii=False)
-                            answers_dict = {a.id: a.answer for a in q_res.answers}
-                            if not q_res.all_confident or any(a.requires_user_input or a.confidence < 85 for a in q_res.answers):
-                                needs_user_answers = True
-
-                        if needs_user_answers:
-                            status = "needs_answers"
-                        elif is_dry_run:
-                            status = "new"
-                        else:
-                            logger.info(f"Режим Dry Run выключен. Отправляем боевой отклик на {vacancy_id}...")
-                            success, err_msg = hh_client.apply_to_vacancy(
-                                vacancy_id=vacancy_id,
-                                resume_title_or_id=chosen_resume_id,
-                                cover_letter=analysis.cover_letter,
-                                answers=answers_dict,
-                                dry_run=False
-                            )
-                            if success:
-                                status = "already_applied" if err_msg == "ALREADY_APPLIED" else "applied"
-                                if status == "applied":
-                                    stats["applied"] += 1
-                            else:
-                                status = "failed"
-                    else:
-                        status = "ignored"
-                    
-                    database.save_vacancy(
-                        vacancy_id=vacancy_id,
-                        title=vacancy_details.get("title", "Без названия"),
-                        company=vacancy_details.get("company", ""),
-                        status=status,
-                        match_score=analysis.match_score,
-                        analysis_reason=analysis.reasoning,
-                        cover_letter=analysis.cover_letter,
-                        questions_data=questions_data_str,
-                        applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title,
-                        scores_data=scores_json_str,
-                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
+                    decision = decide_and_apply(
+                        hh_client, analyzer, vacancy_id, vacancy_details, analysis, candidate_resumes,
+                        threshold=threshold,
+                        dry_run=_is_dry_run(),
+                        user_saved_answers=user_saved_answers,
+                        should_stop=lambda: state.pipeline_status.get("stop_requested")
                     )
-                    
+                    if decision.stopped:
+                        logger.info("Переоценка ошибок остановлена перед откликом.")
+                        stopped_by_user = True
+                        break
+                    decision.save(vacancy_id, vacancy_details.get("title", "Без названия"), vacancy_details.get("company", ""))
+
                     stats["processed"] += 1
-                    if is_eligible:
+                    if decision.is_eligible:
                         stats["matched"] += 1
+                    if decision.status == "applied":
+                        stats["applied"] += 1
+                    elif decision.status == "ignored":
+                        stats["ignored"] += 1
+                    elif decision.status == "failed":
+                        stats["failed"] += 1
                 except QuotaExceededError as qe:
                     logger.error(f"Превышена квота запросов к Gemini API (429) при переоценке: {qe}")
                     state.pipeline_status["last_error"] = "Превышена квота запросов к Gemini API (429 Quota Exceeded). Переоценка остановлена."

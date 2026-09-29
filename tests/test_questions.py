@@ -410,5 +410,60 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         finally:
             state.pipeline_status["is_running"] = False
 
+    def test_11_user_errors_are_4xx(self):
+        """Ошибки из-за данных пользователя и hh.ru не маскируются под 500."""
+        database.set_config_value("dry_run", "false")
+        database.set_config_value("match_threshold", "70")
+
+        # Нет ни одного резюме — 400
+        mock_hh, analysis = self._quick_apply_mocks(90)
+        mock_hh.get_my_resumes.return_value = []
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value=""):
+            res = self.client.post("/api/quick-apply", json={"url_or_id": "55500044"})
+            self.assertEqual(res.status_code, 400)
+            self.assertIn("Резюме не найдено", res.json()["detail"])
+
+        # Вакансия недоступна на hh.ru — 404
+        mock_hh.get_vacancy_details.return_value = None
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"):
+            res = self.client.post("/api/quick-apply", json={"url_or_id": "55500044"})
+            self.assertEqual(res.status_code, 404)
+
+        # hh.ru отклонил отклик — 502, статус failed сохранён
+        mock_hh, analysis = self._quick_apply_mocks(90)
+        mock_hh.apply_to_vacancy.return_value = (False, "Кнопка отклика не найдена")
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"), \
+             patch.object(LLMAnalyzer, "analyze_vacancy", return_value=analysis):
+            res = self.client.post("/api/quick-apply", json={"url_or_id": "55500055"})
+            self.assertEqual(res.status_code, 502)
+            self.assertIn("Кнопка отклика не найдена", res.json()["detail"])
+            self.assertEqual(database.get_vacancy("55500055")["status"], "failed")
+
+    def test_12_reanalyze_unavailable_vacancy_is_404(self):
+        """Переоценка вакансии, которая исчезла с hh.ru, — 404, пайплайн освобождается."""
+        import src.api.state as state
+        database.save_vacancy(vacancy_id="55500066", title="Old", company="C", status="failed",
+                              match_score=0, analysis_reason="err", cover_letter="")
+        mock_hh, _ = self._quick_apply_mocks(90)
+        mock_hh.get_vacancy_details.return_value = None
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"):
+            res = self.client.post("/api/reanalyze/55500066")
+            self.assertEqual(res.status_code, 404)
+        self.assertFalse(state.pipeline_status["is_running"])
+
+    def test_13_pipeline_does_not_apply_with_local_resume(self):
+        """Автоматический сценарий не откликается без резюме из профиля HH."""
+        from src.pipeline.processing import decide_and_apply
+        mock_hh, analysis = self._quick_apply_mocks(90)
+        decision = decide_and_apply(mock_hh, MagicMock(), "1", {}, analysis,
+                                    [{"id": "local", "title": "Локальное", "text": "t"}],
+                                    threshold=70, dry_run=False)
+        self.assertEqual(decision.status, "failed")
+        mock_hh.apply_to_vacancy.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
