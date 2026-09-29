@@ -7,6 +7,7 @@ from src.core.paths import get_app_data_dir, get_bundle_dir
 from src.db import database
 from src.clients.browser import HHBrowserClient
 from src.clients.llm import LLMAnalyzer, QuotaExceededError
+from src.pipeline.processing import decide_and_apply
 
 # Настройка логирования
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -196,6 +197,52 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
         
     return "\n".join(parts)
 
+def _resume_entry(resume_id: str, resume_data: Dict[str, Any], listed: Dict[str, Any] = None) -> Dict[str, Any]:
+    listed = listed or {}
+    return {
+        "id": resume_id,
+        "title": listed.get("title") or resume_data.get("title") or "Резюме",
+        "text": format_hh_resume_to_text(resume_data),
+        # Имя и пол нужны ИИ для подписи и согласования рода в сопроводительном письме
+        "first_name": resume_data.get("first_name") or listed.get("first_name"),
+        "last_name": resume_data.get("last_name") or listed.get("last_name"),
+        "gender": resume_data.get("gender") or listed.get("gender"),
+    }
+
+
+def load_candidate_resumes(hh_client: HHBrowserClient, target_resume_id: str = None) -> List[Dict[str, Any]]:
+    """Загружает резюме кандидата для анализа: все резюме профиля или одно выбранное, иначе локальный файл."""
+    candidate_resumes: List[Dict[str, Any]] = []
+    if not target_resume_id or target_resume_id.lower() in ("all", "__all__"):
+        logger.info("Режим 'Все резюме (Автовыбор ИИ)'. Загрузка всех резюме пользователя...")
+        for listed in hh_client.get_my_resumes():
+            r_id = listed.get("id")
+            if not r_id:
+                continue
+            r_data = hh_client.get_resume(r_id)
+            if r_data:
+                entry = _resume_entry(r_id, r_data, listed)
+                if entry["text"]:
+                    candidate_resumes.append(entry)
+    else:
+        logger.info(f"Загрузка выбранного резюме {target_resume_id} из браузера...")
+        r_data = hh_client.get_resume(target_resume_id)
+        if r_data:
+            candidate_resumes.append(_resume_entry(target_resume_id, r_data))
+        else:
+            logger.warning("Не удалось получить резюме по сети. Попытка загрузить из локального файла.")
+
+    if not candidate_resumes:
+        local_text = load_resume_text()
+        if local_text:
+            candidate_resumes.append({
+                "id": target_resume_id or "local",
+                "title": "Локальное резюме",
+                "text": local_text
+            })
+    return candidate_resumes
+
+
 def run_pipeline(queries: List[str] = None, area_id: str = None, 
                  threshold: int = None, resume_id: str = None, 
                  dry_run: bool = None, max_process: int = 10,
@@ -264,59 +311,11 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
             return {"status": "error", "reason": "not_logged_in", "message": "Сессия hh.ru не активна. Войдите заново через кнопку входа."}
             
         # 3. Загрузка резюме пользователя (поддержка режима 'Все резюме')
-        is_all_resumes = (not target_resume_id or target_resume_id.lower() in ("all", "__all__"))
-        candidate_resumes: List[Dict[str, Any]] = []
-
-        if is_all_resumes:
-            logger.info("Включен режим 'Все резюме (Автовыбор ИИ)'. Загрузка всех резюме пользователя...")
-            all_my_resumes = hh_client.get_my_resumes()
-            for r in all_my_resumes:
-                r_id = r.get("id")
-                if not r_id:
-                    continue
-                r_data = hh_client.get_resume(r_id)
-                r_text = format_hh_resume_to_text(r_data) if r_data else ""
-                if r_text:
-                    candidate_resumes.append({
-                        "id": r_id,
-                        "title": r.get("title") or (r_data.get("title") if r_data else "Резюме"),
-                        "text": r_text,
-                        "first_name": (r_data.get("first_name") if r_data else None) or r.get("first_name"),
-                        "last_name": (r_data.get("last_name") if r_data else None) or r.get("last_name"),
-                        "gender": (r_data.get("gender") if r_data else None) or r.get("gender"),
-                    })
-            if candidate_resumes:
-                logger.info(f"Успешно загружено {len(candidate_resumes)} резюме пользователя для сравнительного анализа.")
-        else:
-            logger.info(f"Загрузка выбранного резюме {target_resume_id} из браузера...")
-            resume_data = hh_client.get_resume(target_resume_id)
-            if resume_data:
-                r_text = format_hh_resume_to_text(resume_data)
-                candidate_resumes.append({
-                    "id": target_resume_id,
-                    "title": resume_data.get("title") or "Резюме",
-                    "text": r_text,
-                    "first_name": resume_data.get("first_name"),
-                    "last_name": resume_data.get("last_name"),
-                    "gender": resume_data.get("gender"),
-                })
-                logger.info(f"Резюме '{resume_data.get('title')}' успешно загружено.")
-            else:
-                logger.warning("Не удалось получить резюме по сети. Попытка загрузить из локального файла.")
-
-        if not candidate_resumes:
-            logger.info("Загрузка текста резюме из локального файла...")
-            local_text = load_resume_text()
-            if local_text:
-                candidate_resumes.append({
-                    "id": target_resume_id or "local",
-                    "title": "Локальное резюме",
-                    "text": local_text
-                })
+        candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
 
         if not candidate_resumes:
             logger.error("Текст резюме отсутствует. Запуск конвейера невозможен.")
-            return {"status": "error", "message": "Resume content is empty"}
+            return {"status": "error", "message": "Резюме не найдено: выберите резюме в настройках или проверьте вход в hh.ru."}
             
         logger.info(f"К анализу готово резюме: {len(candidate_resumes)} шт. ({', '.join(r['title'] for r in candidate_resumes)})")
         if target_dry_run:
@@ -488,134 +487,43 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
                     stats["failed"] += 1
                     continue
                 
-                chosen_resume_id = analysis.selected_resume_id or (candidate_resumes[0]["id"] if candidate_resumes else target_resume_id)
-                chosen_resume_title = analysis.selected_resume_title or (candidate_resumes[0]["title"] if candidate_resumes else "Резюме")
-                
-                # Находим текст выбранного резюме для возможных ответов на вопросы
-                chosen_resume_text = next((r["text"] for r in candidate_resumes if r["id"] == chosen_resume_id), candidate_resumes[0]["text"] if candidate_resumes else "")
+                decision = decide_and_apply(
+                    hh_client, analyzer, vacancy_id, details, analysis, candidate_resumes,
+                    threshold=target_threshold,
+                    dry_run=target_dry_run,
+                    user_saved_answers=user_saved_answers,
+                    should_stop=should_stop
+                )
 
-                # Сериализуем данные по 5 шкалам для сохранения в БД и отображения в UI
-                scores_json_str = None
-                if analysis.scores:
-                    import json
-                    scores_payload = analysis.scores.model_dump()
-                    scores_payload["has_hard_blocker"] = analysis.has_hard_blocker
-                    scores_payload["blocker_reason"] = analysis.blocker_reason
-                    scores_json_str = json.dumps(scores_payload, ensure_ascii=False)
-
-                # Строгая проверка порога и отсутствия блокирующих факторов
-                is_eligible = (not analysis.has_hard_blocker) and (analysis.match_score >= target_threshold)
-
-                if is_eligible:
+                if decision.is_eligible:
                     stats["matched"] += 1
-                    logger.info(f"ВАКАНСИЯ ПОДХОДИТ! Совпадение: {analysis.match_score}% (порог: {target_threshold}%). Выбранное резюме: '{chosen_resume_title}' (ID: {chosen_resume_id})")
+                    logger.info(f"ВАКАНСИЯ ПОДХОДИТ! Совпадение: {analysis.match_score}% (порог: {target_threshold}%). Выбранное резюме: '{decision.resume_title}' (ID: {decision.resume_id})")
                     logger.info(f"Причина: {analysis.reasoning}")
-                    
-                    # Проверяем остановку перед откликом
-                    if should_stop and should_stop():
+                    if decision.stopped:
                         logger.info("Обработка вакансий остановлена перед откликом.")
                         stopped_by_user = True
                         break
-
-                    # Проверяем наличие вопросов/теста от работодателя
-                    questions = hh_client.get_vacancy_questions(vacancy_id)
-                    questions_data_str = None
-                    answers_dict = None
-                    needs_user_answers = False
-
-                    if questions:
-                        logger.info(f"Обнаружено {len(questions)} вопросов от работодателя. Генерация ответов через ИИ на основе резюме '{chosen_resume_title}'...")
-                        import json
-                        q_res = analyzer.answer_questions(chosen_resume_text, details, questions, user_saved_answers)
-                        questions_data_str = json.dumps([a.model_dump() for a in q_res.answers], ensure_ascii=False)
-                        answers_dict = {a.id: a.answer for a in q_res.answers}
-                        
-                        if not q_res.all_confident or any(a.requires_user_input or a.confidence < 85 for a in q_res.answers):
-                            logger.info(f"Вопросы требуют личного подтверждения кандидата. Перевод в статус 'needs_answers'.")
-                            needs_user_answers = True
-
-                    # Откликаемся или сохраняем как готовую к отклику при Dry Run / needs_answers
-                    if needs_user_answers:
-                        status = "needs_answers"
+                    if decision.status == "needs_answers":
                         logger.info(f"Вакансия {vacancy_id} сохранена со статусом 'needs_answers' (требуются ответы).")
-                    elif target_dry_run:
-                        logger.info(f"[Dry Run] Вакансия сохранена как релевантная (статус: new). Отклик не отправлялся.")
-                        status = "new"
+                    elif decision.status == "new":
+                        logger.info("[Dry Run] Вакансия сохранена как релевантная (статус: new). Отклик не отправлялся.")
+                    elif decision.status == "applied":
+                        stats["applied"] += 1
+                        logger.info(f"Успешный отклик отправлен с резюме '{decision.resume_title}'.")
+                    elif decision.status == "already_applied":
+                        logger.info("Уже откликнулись ранее.")
                     else:
-                        if not chosen_resume_id or chosen_resume_id == "local":
-                            logger.error(f"Невозможно отправить отклик на {vacancy_id}: Резюме не выбрано или только локальный файл!")
-                            database.save_vacancy(
-                                vacancy_id=vacancy_id,
-                                title=title,
-                                company=company,
-                                status="failed",
-                                match_score=analysis.match_score,
-                                analysis_reason="Резюме не найдено в профиле HH для отклика",
-                                cover_letter=analysis.cover_letter,
-                                questions_data=questions_data_str,
-                                applied_resume_id=chosen_resume_id,
-                                applied_resume_title=chosen_resume_title,
-                                scores_data=scores_json_str
-                            )
-                            stats["failed"] += 1
-                            continue
-                            
-                        success, err_msg = hh_client.apply_to_vacancy(
-                            vacancy_id=vacancy_id,
-                            resume_title_or_id=chosen_resume_id,
-                            cover_letter=analysis.cover_letter,
-                            answers=answers_dict,
-                            dry_run=False
-                        )
-                        
-                        if success:
-                            if err_msg == "ALREADY_APPLIED":
-                                status = "already_applied"
-                                logger.info(f"Уже откликнулись ранее.")
-                            else:
-                                status = "applied"
-                                stats["applied"] += 1
-                                logger.info(f"Успешный отклик отправлен с резюме '{chosen_resume_title}'.")
-                        else:
-                            status = "failed"
-                            stats["failed"] += 1
-                            logger.error(f"Ошибка отклика на {vacancy_id}: {err_msg}")
-                        
-                    database.save_vacancy(
-                        vacancy_id=vacancy_id,
-                        title=title,
-                        company=company,
-                        status=status,
-                        match_score=analysis.match_score,
-                        analysis_reason=analysis.reasoning,
-                        cover_letter=analysis.cover_letter,
-                        questions_data=questions_data_str,
-                        applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title,
-                        scores_data=scores_json_str,
-                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                    )
+                        stats["failed"] += 1
+                        logger.error(f"Ошибка отклика на {vacancy_id}: {decision.error or decision.apply_error}")
                 else:
                     stats["ignored"] += 1
                     blocker_msg = f" [Блокер: {analysis.blocker_reason}]" if analysis.has_hard_blocker and analysis.blocker_reason else ""
-                    logger.info(f"Вакансию пропускаем. Совпадение: {analysis.match_score}% (порог: {target_threshold}%){blocker_msg}. Резюме: {chosen_resume_title}")
+                    logger.info(f"Вакансию пропускаем. Совпадение: {analysis.match_score}% (порог: {target_threshold}%){blocker_msg}. Резюме: {decision.resume_title}")
                     logger.info(f"Причина отсева: {analysis.reasoning}")
-                    
-                    database.save_vacancy(
-                        vacancy_id=vacancy_id,
-                        title=title,
-                        company=company,
-                        status="ignored",
-                        match_score=analysis.match_score,
-                        analysis_reason=analysis.reasoning,
-                        cover_letter="",
-                        applied_resume_id=chosen_resume_id,
-                        applied_resume_title=chosen_resume_title,
-                        scores_data=scores_json_str,
-                        analyzed_by_provider=getattr(analysis, "analyzed_by_provider", None),
-                        analyzed_by_model=getattr(analysis, "analyzed_by_model", None)
-                    )
+                    # Письмо для неподходящей вакансии не нужно
+                    decision.cover_letter = ""
+
+                decision.save(vacancy_id, title, company)
 
                 # Проверка достижения лимитов сразу после завершения обработки вакансии
                 effective_applied = stats["applied"] if not target_dry_run else stats["matched"]

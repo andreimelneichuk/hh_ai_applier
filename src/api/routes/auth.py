@@ -42,6 +42,8 @@ def open_login_browser(background_tasks: BackgroundTasks):
     """Запускает видимый браузер для авторизации."""
     if state.login_browser_active:
         return {"status": "already_open"}
+    if state.pipeline_status.get("is_running"):
+        return {"status": "error", "message": "Идёт сканирование — остановите его перед повторным входом."}
         
     background_tasks.add_task(run_login_browser_task)
     return {"status": "opened"}
@@ -55,6 +57,7 @@ def get_status():
         not state.cached_login_status
         and not state.login_browser_active
         and not state.pipeline_status.get("is_running")
+        and not HHBrowserClient.is_busy()
         and (now - state.last_login_check_time > 45)
     )
         
@@ -75,12 +78,12 @@ def get_status():
             "authorized": False,
             "login_active": state.login_browser_active,
             "user": None,
-            "pipeline": state.pipeline_status
+            "pipeline": state.pipeline_snapshot()
         }
         
     return {
         "authorized": True,
         "login_active": state.login_browser_active,
         "user": state.cached_user_info,
-        "pipeline": state.pipeline_status
+        "pipeline": state.pipeline_snapshot()
     }

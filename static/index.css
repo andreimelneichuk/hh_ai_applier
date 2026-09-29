@@ -1019,6 +1019,11 @@ button:disabled:hover {
     color: var(--accent-green-light); 
     border-color: rgba(52, 211, 153, 0.35); 
 }
+.status-new { 
+    background: var(--accent-purple-glass); 
+    color: #c084fc; 
+    border-color: rgba(168, 85, 247, 0.4); 
+}
 .status-needs_answers { 
     background: var(--accent-amber-glass); 
     color: #fde047; 
@@ -1448,6 +1453,7 @@ button:disabled:hover {
 .toast.success { border-left: 3px solid var(--accent-green); }
 .toast.error { border-left: 3px solid var(--accent-red); }
 .toast.info { border-left: 3px solid var(--accent-blue); }
+.toast.warning { border-left: 3px solid var(--accent-amber); }
 
 @keyframes toastSlideIn {
     from {

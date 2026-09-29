@@ -1,3 +1,18 @@
+// Токен приложения: сервер выдаёт его в index.html и требует в каждом запросе к /api/*
+(function installAppTokenFetch() {
+    const meta = document.querySelector('meta[name="app-token"]');
+    const token = meta ? meta.getAttribute("content") : "";
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+        const url = typeof input === "string" ? input : (input && input.url) || "";
+        const isApi = url.startsWith("/api/") || url.startsWith(`${window.location.origin}/api/`);
+        if (!isApi || !token) return nativeFetch(input, init);
+        const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+        headers.set("X-App-Token", token);
+        return nativeFetch(input, { ...init, headers });
+    };
+})();
+
 // Глобальное состояние
 let currentJobs = [];
 let userSettings = {};
@@ -44,6 +59,28 @@ const DEAD_OPENROUTER_MODELS = new Set([
 ]);
 
 // Универсальный парсер API ключей (очищает от кавычек, скобок, поддерживает JSON-массивы и списки через запятую)
+// Сохранённые ключи сервер отдаёт только в маскированном виде; открыть или скопировать их нельзя
+function isMaskedKey(key) {
+    return String(key || "").includes("•");
+}
+
+// Статус ключа с сервера ("ok"/"error" + reason) → состояние бейджа в модалке провайдера
+const RATE_LIMIT_REASONS = ["rate_limit_or_quota", "rate_limited", "quota_exceeded"];
+function normalizeKeyStatus(status, reason) {
+    if (status === "rate_limited" || RATE_LIMIT_REASONS.includes(reason)) return "rate_limited";
+    if (status === "ok" || status === "valid") return "valid";
+    if (status === "error" || status === "invalid") return "error";
+    return "untested";
+}
+
+// Та же маска, что у сервера (database.mask_api_key): по ней сопоставляются статусы ключей
+function maskApiKey(key) {
+    const k = String(key || "").trim();
+    if (!k || isMaskedKey(k)) return k;
+    if (k.length <= 10) return k.length >= 4 ? `${k.slice(0, 2)}••••••••${k.slice(-2)}` : "••••••••";
+    return `${k.slice(0, 6)}••••••••${k.slice(-4)}`;
+}
+
 function parseKeysList(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) {
@@ -1901,22 +1938,20 @@ async function probeAllDetailKeys() {
             });
             const result = await res.json();
             
-            let status = "invalid";
-            if (result.success) {
-                status = "valid";
+            const status = result.success ? "valid" : normalizeKeyStatus("error", result.reason);
+            if (status === "valid") {
                 successCount++;
-            } else if (result.reason === "rate_limited" || result.status_code === 429) {
-                status = "rate_limited";
+            } else if (status === "rate_limited") {
                 rateLimitedCount++;
             } else {
-                status = "error";
                 errorCount++;
             }
 
-            const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === cleanKey);
+            const maskedProbeKey = maskApiKey(cleanKey);
+            const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === maskedProbeKey);
             const entry = {
-                key: cleanKey,
-                masked: cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey,
+                key: maskedProbeKey,
+                masked: maskedProbeKey,
                 status: status,
                 reason: result.reason || result.error || null,
                 detail: result.detail || result.error || null,
@@ -1967,9 +2002,10 @@ function renderProviderDetailKeys() {
         card.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; gap: 8px;";
 
         const cleanKey = String(key || "").trim().replace(/^["'\[]+|["'\]]+$/g, '');
-        const maskedKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
-        const kd = (currentDetailKeysData || []).find(k => k.key === cleanKey) || {};
-        const kStatus = kd.status || "untested";
+        const maskedKey = maskApiKey(cleanKey);
+        const kd = (currentDetailKeysData || []).find(k => k.key === maskedKey) || {};
+        const keyHidden = isMaskedKey(cleanKey);
+        const kStatus = normalizeKeyStatus(kd.status, kd.reason);
 
         let keyStatusBadge = '<span class="glass-badge" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; font-size: 10px;">⚪️ Не проверен</span>';
         if (kStatus === "valid") {
@@ -1996,9 +2032,9 @@ function renderProviderDetailKeys() {
                 ${detailMsgHtml}
             </div>
             <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
-                <button type="button" class="btn btn-secondary btn-xs pdm-key-reveal" title="Показать/скрыть" style="padding: 2px 6px; font-size: 11px;">👁️</button>
-                <button type="button" class="btn btn-secondary btn-xs pdm-key-copy" title="Скопировать ключ в буфер" style="padding: 2px 6px; font-size: 11px;">📋</button>
-                <button type="button" class="btn btn-secondary btn-xs pdm-key-edit" title="Редактировать ключ" style="padding: 2px 6px; font-size: 11px;">✏️</button>
+                ${keyHidden ? "" : `<button type="button" class="btn btn-secondary btn-xs pdm-key-reveal" title="Показать/скрыть" style="padding: 2px 6px; font-size: 11px;">👁️</button>
+                <button type="button" class="btn btn-secondary btn-xs pdm-key-copy" title="Скопировать ключ в буфер" style="padding: 2px 6px; font-size: 11px;">📋</button>`}
+                <button type="button" class="btn btn-secondary btn-xs pdm-key-edit" title="${keyHidden ? "Заменить ключ" : "Редактировать ключ"}" style="padding: 2px 6px; font-size: 11px;">✏️</button>
                 <button type="button" class="btn btn-secondary btn-xs pdm-key-probe" title="Проверить ключ через API" style="padding: 2px 8px; font-size: 10.5px; color: #34d399;">Проверить</button>
                 <button type="button" class="btn btn-secondary btn-xs pdm-key-delete" title="Удалить ключ" style="padding: 2px 6px; font-size: 11px; color: #f87171;">🗑️</button>
             </div>
@@ -2012,7 +2048,7 @@ function renderProviderDetailKeys() {
         const probeBtn = card.querySelector(".pdm-key-probe");
         const delBtn = card.querySelector(".pdm-key-delete");
 
-        revealBtn.addEventListener("click", () => {
+        if (revealBtn) revealBtn.addEventListener("click", () => {
             revealed = !revealed;
             if (revealed) {
                 textSpan.textContent = cleanKey;
@@ -2027,7 +2063,7 @@ function renderProviderDetailKeys() {
             }
         });
 
-        copyBtn.addEventListener("click", async () => {
+        if (copyBtn) copyBtn.addEventListener("click", async () => {
             try {
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     await navigator.clipboard.writeText(cleanKey);
@@ -2046,7 +2082,9 @@ function renderProviderDetailKeys() {
         });
 
         editBtn.addEventListener("click", async () => {
-            const updated = prompt(`Редактировать API-ключ #${idx + 1}:`, cleanKey);
+            const updated = keyHidden
+                ? prompt(`Сохранённый ключ скрыт (${maskedKey}). Вставьте новый ключ, чтобы заменить #${idx + 1}:`, "")
+                : prompt(`Редактировать API-ключ #${idx + 1}:`, cleanKey);
             if (updated !== null) {
                 const cleanedUpdated = String(updated).trim().replace(/^["'\[]+|["'\]]+$/g, '');
                 if (!cleanedUpdated) {
@@ -2072,22 +2110,20 @@ function renderProviderDetailKeys() {
                 });
                 const result = await res.json();
                 
-                let status = "invalid";
-                if (result.success) {
-                    status = "valid";
+                const status = result.success ? "valid" : normalizeKeyStatus("error", result.reason);
+                if (status === "valid") {
                     showToast(`Ключ #${idx + 1} валиден! (${result.latency_ms || 0} ms)`, "success");
-                } else if (result.reason === "rate_limited" || result.status_code === 429) {
-                    status = "rate_limited";
+                } else if (status === "rate_limited") {
                     showToast(`Ключ #${idx + 1}: Лимит запросов исчерпан (429)`, "warning");
                 } else {
-                    status = "error";
                     showToast(`Ошибка ключа: ${result.error || result.detail || result.reason || 'Невалидный ключ'}`, "error");
                 }
 
-                const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === cleanKey);
+                const maskedProbeKey = maskApiKey(cleanKey);
+                const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === maskedProbeKey);
                 const entry = {
-                    key: cleanKey,
-                    masked: cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey,
+                    key: maskedProbeKey,
+                    masked: maskedProbeKey,
                     status: status,
                     reason: result.reason || result.error || null,
                     detail: result.detail || result.error || null,
@@ -2111,10 +2147,9 @@ function renderProviderDetailKeys() {
         });
 
         delBtn.addEventListener("click", async () => {
-            const removedKey = currentDetailKeys[idx];
             currentDetailKeys.splice(idx, 1);
             if (currentDetailKeysData) {
-                currentDetailKeysData = currentDetailKeysData.filter(kd => kd.key !== removedKey);
+                currentDetailKeysData = currentDetailKeysData.filter(kd => kd.key !== maskedKey);
             }
             renderProviderDetailKeys();
             await autoSaveProviderKeys();
@@ -2823,7 +2858,7 @@ async function loadResumesDropdown(selectedResumeId) {
     
     try {
         const response = await fetch("/api/resumes");
-        const data = await response.json();
+        const data = response.ok ? await response.json() : { resumes: [] };
         
         select.innerHTML = "";
         
@@ -2833,7 +2868,11 @@ async function loadResumesDropdown(selectedResumeId) {
         allOpt.textContent = "✨ Все резюме (Автовыбор ИИ)";
         select.appendChild(allOpt);
         
-        if (data.resumes && data.resumes.length > 0) {
+        if (!response.ok) {
+            // Список недоступен (например, браузер занят сканированием) — не теряем сохранённый выбор
+            keepSavedResumeOption(select, selectedResumeId);
+            resumeGroup.classList.remove("hide");
+        } else if (data.resumes && data.resumes.length > 0) {
             data.resumes.forEach(r => {
                 const opt = document.createElement("option");
                 opt.value = r.id;
@@ -2865,7 +2904,20 @@ async function loadResumesDropdown(selectedResumeId) {
     } catch (e) {
         console.error("Error loading resumes:", e);
         select.innerHTML = '<option value="all">✨ Все резюме (Автовыбор ИИ)</option>';
+        keepSavedResumeOption(select, selectedResumeId);
     }
+}
+
+function keepSavedResumeOption(select, selectedResumeId) {
+    if (!selectedResumeId || selectedResumeId === "all") {
+        select.value = "all";
+        return;
+    }
+    const opt = document.createElement("option");
+    opt.value = selectedResumeId;
+    opt.textContent = "📄 Сохранённое резюме (список сейчас недоступен)";
+    select.appendChild(opt);
+    select.value = selectedResumeId;
 }
 
 // Сохранение настроек поиска
@@ -2877,8 +2929,6 @@ async function saveSettings(e) {
         .map(q => q.trim())
         .filter(Boolean);
         
-    const geminiKeys = currentGeminiKeys.join(",");
-    const mistralKeys = currentMistralKeys.join(",");
     const modelSelect = document.getElementById("sys-gemini-model-select") || document.getElementById("model-select");
     const selectedModel = modelSelect ? modelSelect.value : (userSettings.gemini_model || "gemini-3.6-flash");
     const mistralModelSelect = document.getElementById("sys-mistral-model-select") || document.getElementById("mistral-model-select");
@@ -2897,11 +2947,9 @@ async function saveSettings(e) {
         threshold: parseInt(document.getElementById("threshold-range").value, 10),
         resume_id: document.getElementById("resume-select").value,
         dry_run: document.getElementById("dryrun-toggle").checked,
-        gemini_api_keys: geminiKeys,
+        // Ключи здесь не отправляем: ими управляют Менеджер ключей и окно провайдера
         gemini_model: selectedModel,
-        mistral_api_keys: mistralKeys,
         mistral_model: selectedMistralModel,
-        openai_api_keys: currentOpenaiKeys.join(","),
         openai_provider_preset: openaiPresetSelect ? openaiPresetSelect.value : (userSettings.openai_provider_preset || "groq"),
         openai_base_url: openaiBaseUrlInput ? openaiBaseUrlInput.value.trim() : (userSettings.openai_base_url || "https://api.groq.com/openai/v1"),
         openai_model: openaiModelSelect ? openaiModelSelect.value : (userSettings.openai_model || "llama-3.3-70b-versatile"),
@@ -2928,7 +2976,7 @@ async function saveSettings(e) {
                 btn.style.backgroundColor = "";
             }, 2000);
             
-            userSettings = payload;
+            userSettings = { ...userSettings, ...payload };
             updateLimitsModalUIFromSettings();
         }
     } catch (e) {
@@ -3118,6 +3166,11 @@ async function saveLimitsSettingsFromModal() {
         limit_applications: nApps,
         limit_processed: nProc
     };
+    // Ключи в userSettings могут быть устаревшими — не отправляем их, чтобы не затереть актуальные
+    const limitsPayload = { ...updatedSettings };
+    delete limitsPayload.gemini_api_keys;
+    delete limitsPayload.mistral_api_keys;
+    delete limitsPayload.openai_api_keys;
 
     if (saveBtn) {
         saveBtn.disabled = true;
@@ -3128,7 +3181,7 @@ async function saveLimitsSettingsFromModal() {
         const response = await fetch("/api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(updatedSettings)
+            body: JSON.stringify(limitsPayload)
         });
 
         if (response.ok) {
@@ -3160,11 +3213,15 @@ async function startScanning() {
     }
     if (isPolling) return;
     
+    // Блокируем кнопку на время запроса, чтобы двойной клик не отправил два запуска
+    if (btn) btn.setAttribute("disabled", "true");
+    let started = false;
     try {
         const response = await fetch("/api/search", { method: "POST" });
         const data = await response.json();
         
         if (data.status === "started") {
+            started = true;
             window.hasReportedCompletion = false;
             setScanningState(true);
             showToast("Сканирование и анализ вакансий запущены", "info");
@@ -3174,6 +3231,8 @@ async function startScanning() {
     } catch (e) {
         console.error("Error starting search:", e);
         showToast("Сетевая ошибка при запуске сканирования", "error");
+    } finally {
+        if (!started && btn) btn.removeAttribute("disabled");
     }
 }
 
@@ -3306,18 +3365,25 @@ async function pollScanStatus() {
                 window.hasReportedCompletion = true;
                 if (statusData.pipeline.last_error) {
                     showToast(`Анализ завершен с ошибкой:\n${statusData.pipeline.last_error}`, "error");
-                } else if (statusData.pipeline.last_status === "stopped") {
-                    showToast("⏹ Анализ остановлен пользователем", "info");
                 } else if (statusData.pipeline.last_run_stats) {
                     const s = statusData.pipeline.last_run_stats;
-                    const msg = [
-                        `✅ Анализ завершен!`,
-                        `Обработано: ${s.processed}`,
-                        `Подошли: ${s.matched}`,
+                    const stoppedByUser = statusData.pipeline.last_status === "stopped";
+                    const limitNote = {
+                        limit_applications: "Достигнут лимит откликов",
+                        limit_processed: "Достигнут лимит оценённых вакансий"
+                    }[s.stopped_reason];
+                    const lines = [
+                        stoppedByUser ? "⏹ Анализ остановлен пользователем" : (limitNote ? `✅ Анализ завершен: ${limitNote.toLowerCase()}` : `✅ Анализ завершен!`),
+                        `Обработано: ${s.processed || 0}`,
+                        `Подошли: ${s.matched || 0}`,
                         `Откликов: ${s.applied || 0}`,
                         `Ошибок: ${s.failed || 0}`
-                    ].join("\n");
-                    showToast(msg, "success");
+                    ];
+                    if (s.skipped) lines.push(`Недоступны на hh.ru: ${s.skipped}`);
+                    const msg = lines.join("\n");
+                    showToast(msg, stoppedByUser ? "info" : "success");
+                } else if (statusData.pipeline.last_status === "stopped") {
+                    showToast("⏹ Анализ остановлен пользователем", "info");
                 }
             }
         }
@@ -3351,14 +3417,18 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
     
     const fetchId = ++currentFetchId;
     const requestedFilter = currentFilter;
-    const requestedOffset = currentOffset;
+    // Догрузка берёт следующую страницу; обычное/фоновое обновление перезапрашивает всё уже загруженное
+    // с начала, иначе после «Показать ещё» список заменялся бы одной последней страницей
+    const requestedOffset = append ? currentOffset : 0;
+    const requestedLimit = append ? itemsPerPage : currentOffset + itemsPerPage;
     
     try {
         if (!isSilent && !append) {
             setStatsLoading(true);
         }
-        const response = await fetch(`/api/jobs?status=${requestedFilter}&limit=${itemsPerPage}&offset=${requestedOffset}`);
+        const response = await fetch(`/api/jobs?status=${requestedFilter}&limit=${requestedLimit}&offset=${requestedOffset}`);
         if (!response.ok) {
+            if (append) currentOffset = Math.max(0, currentOffset - itemsPerPage);
             if (fetchId === currentFetchId && !isSilent) {
                 setStatsLoading(false);
             }
@@ -3380,8 +3450,8 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
             currentJobs = newJobs;
         }
         
-        // Кэшируем результаты только для вкладки "Все" без догрузки
-        if (requestedFilter === "all" && !append) {
+        // Кэшируем только первую страницу вкладки "Все" (её и показываем при старте)
+        if (requestedFilter === "all" && !append && currentOffset === 0) {
             localStorage.setItem("cached_jobs", JSON.stringify(currentJobs));
             localStorage.setItem("cached_stats", JSON.stringify(data.stats));
         }
@@ -3408,7 +3478,7 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
         // Управляем видимостью кнопки "Показать ещё"
         const loadMoreWrapper = document.getElementById("load-more-wrapper");
         if (loadMoreWrapper) {
-            if (newJobs.length < itemsPerPage) {
+            if (newJobs.length < requestedLimit) {
                 loadMoreWrapper.classList.add("hide");
             } else {
                 loadMoreWrapper.classList.remove("hide");
@@ -3416,6 +3486,7 @@ async function loadJobs(reset = false, append = false, isSilent = false) {
         }
     } catch (e) {
         console.error("Error loading jobs:", e);
+        if (append) currentOffset = Math.max(0, currentOffset - itemsPerPage);
         if (fetchId === currentFetchId && !isSilent) {
             setStatsLoading(false);
         }
@@ -3649,7 +3720,7 @@ function renderJobsList(append = false) {
                 const genBtnHtml = (job.status === "ignored" && !job.cover_letter)
                     ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; border-radius: var(--radius-pill); border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.15); color: #d8b4fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleGenerateLetterQuick('${job.id}')" title="Сгенерировать сопроводительное письмо с ИИ">✨ Письмо</button>`
                     : '';
-                quickBtnHtml = `${genBtnHtml}<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.15); color: #c7d2fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleQuickApply('${job.id}')" title="Сгенерировать письмо, ответить на вопросы и отправить">⚡ ИИ-отклик</button>`;
+                quickBtnHtml = `${genBtnHtml}<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-radius: var(--radius-pill); border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.15); color: #c7d2fe; white-space: nowrap;" onclick="event.stopPropagation(); window.handleQuickApplyFromCard('${job.id}', this)" title="Сгенерировать письмо, ответить на вопросы и отправить">⚡ ИИ-отклик</button>`;
             }
             
             const resumeBadgeHtml = job.applied_resume_title 
@@ -3822,9 +3893,14 @@ function openModal(job) {
                 item.style.cssText = "background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px;";
                 
                 const isUserReq = q.requires_user_input;
-                const badgeHtml = isUserReq 
-                    ? `<span class="badge" style="background: rgba(239,68,68,0.2); color: #f87171; font-size: 10px; padding: 2px 6px;">⚠️ Требуется ваш ответ</span>`
-                    : `<span class="badge" style="background: rgba(16,185,129,0.2); color: #34d399; font-size: 10px; padding: 2px 6px;">✨ ИИ уверен (${q.confidence || 90}%)</span>`;
+                let badgeHtml;
+                if (isUserReq) {
+                    badgeHtml = `<span class="badge" style="background: rgba(239,68,68,0.2); color: #f87171; font-size: 10px; padding: 2px 6px;">⚠️ Требуется ваш ответ</span>`;
+                } else if (q.answered_by_user) {
+                    badgeHtml = `<span class="badge" style="background: rgba(56,189,248,0.2); color: #7dd3fc; font-size: 10px; padding: 2px 6px;">✍️ Ваш ответ</span>`;
+                } else {
+                    badgeHtml = `<span class="badge" style="background: rgba(16,185,129,0.2); color: #34d399; font-size: 10px; padding: 2px 6px;">✨ ИИ уверен (${q.confidence || 90}%)</span>`;
+                }
                 
                 item.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px;">
@@ -3875,21 +3951,34 @@ function openModal(job) {
     };
     updateLetterBtnState();
     textarea.oninput = updateLetterBtnState;
-    textarea.onblur = async () => {
-        const text = textarea.value.trim();
-        if (job.status !== "applied" && job.status !== "already_applied") {
-            try {
-                await fetch(`/api/vacancies/${job.id}/save-draft`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ cover_letter: text })
-                });
-                job.cover_letter = text;
-            } catch (e) {
-                console.error("Auto-save draft error:", e);
-            }
+
+    // Автосохранение черновика: письмо и ответы на вопросы работодателя
+    let lastSavedDraft = JSON.stringify({ cover_letter: (job.cover_letter || "").trim(), answers: collectModalAnswers() });
+    const saveDraft = async () => {
+        if (job.status === "applied" || job.status === "already_applied") return;
+        const draft = { cover_letter: textarea.value.trim(), answers: collectModalAnswers() };
+        const serialized = JSON.stringify(draft);
+        if (serialized === lastSavedDraft) return;
+        try {
+            const res = await fetch(`/api/vacancies/${job.id}/save-draft`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: serialized
+            });
+            if (!res.ok) return;
+            lastSavedDraft = serialized;
+            job.cover_letter = draft.cover_letter;
+            applyAnswersToJob(job, draft.answers);
+        } catch (e) {
+            console.error("Auto-save draft error:", e);
         }
     };
+    textarea.onblur = saveDraft;
+    if (qList) {
+        qList.onfocusout = (e) => {
+            if (e.target && e.target.classList.contains("question-answer-input")) saveDraft();
+        };
+    }
 
     if (genLetterBtn) {
         genLetterBtn.onclick = async () => {
@@ -3897,13 +3986,17 @@ function openModal(job) {
         };
     }
     
-    const defaultApplyText = "Откликнуться";
+    const defaultApplyText = "Откликнуться сейчас";
+    const isSent = job.status === "applied" || job.status === "already_applied";
+    document.querySelectorAll("#modal-questions-list .question-answer-input").forEach(inp => {
+        if (isSent) inp.setAttribute("readonly", "true");
+        else inp.removeAttribute("readonly");
+    });
     
     if (job.status === "applied" || job.status === "already_applied") {
         applyBtn.setAttribute("disabled", "true");
         applyBtn.textContent = job.status === "already_applied" ? "Откликнут ранее" : "Уже отправлено";
         textarea.setAttribute("readonly", "true");
-        ignoreBtn.classList.add("hide");
     } else if (job.status === "failed") {
         // Для ошибочных вакансий показываем кнопку переоценки
         reanalyzeBtn.classList.remove("hide");
@@ -3932,14 +4025,7 @@ function openModal(job) {
         }
         
         // Сбор ответов на вопросы
-        const answersDict = {};
-        const qInputs = document.querySelectorAll("#modal-questions-list textarea, #modal-questions-list input");
-        qInputs.forEach(inp => {
-            const qid = inp.getAttribute("data-qid") || inp.getAttribute("data-qtext");
-            if (qid) {
-                answersDict[qid] = inp.value.trim();
-            }
-        });
+        const answersDict = collectModalAnswers();
 
         applyBtn.setAttribute("disabled", "true");
         applyBtn.textContent = "Отправка...";
@@ -3958,21 +4044,25 @@ function openModal(job) {
                 })
             });
             
+            const result = await response.json().catch(() => ({}));
             if (response.ok) {
                 modal.classList.add("hide");
-                showToast("Отклик успешно отправлен!", "success");
+                if (result.vacancy_status === "already_applied") {
+                    showToast("Вы уже откликались на эту вакансию ранее — статус обновлён.", "info");
+                } else {
+                    showToast("Отклик успешно отправлен!", "success");
+                }
                 await loadJobs();
             } else {
-                const err = await response.json();
-                showToast("Ошибка при отклике: " + (err.detail || "неизвестная ошибка."), "error");
+                showToast("Ошибка при отклике: " + (result.detail || result.message || "неизвестная ошибка."), "error");
                 applyBtn.removeAttribute("disabled");
-                applyBtn.textContent = "Откликнуться";
+                applyBtn.textContent = defaultApplyText;
             }
         } catch (e) {
             console.error("Error applying:", e);
             showToast("Сетевая ошибка при отклике.", "error");
             applyBtn.removeAttribute("disabled");
-            applyBtn.textContent = "Откликнуться";
+            applyBtn.textContent = defaultApplyText;
         }
     };
     
@@ -3980,6 +4070,8 @@ function openModal(job) {
         reanalyzeBtn.setAttribute("disabled", "true");
         reanalyzeBtn.textContent = "Анализ...";
         
+        // Одиночная переоценка отчитывается сама — итоговый тост пакетного анализа здесь не нужен
+        window.hasReportedCompletion = true;
         startRealtimePolling();
         
         try {
@@ -3987,9 +4079,10 @@ function openModal(job) {
             const data = await response.json();
             if (response.ok && data.status !== "error") {
                 modal.classList.add("hide");
+                showToast(`Переоценка завершена: ${getStatusLabel(data.new_status)}, ${data.score}%`, "success");
                 await loadJobs(true);
             } else {
-                showToast("Ошибка при переоценке: " + (data.message || "неизвестная ошибка."), "error");
+                showToast("Ошибка при переоценке: " + (data.detail || data.message || "неизвестная ошибка."), "error");
                 reanalyzeBtn.removeAttribute("disabled");
                 reanalyzeBtn.textContent = "↺ Переоценить";
             }
@@ -4006,6 +4099,39 @@ function openModal(job) {
     };
     
     modal.classList.remove("hide");
+}
+
+// Ответы на вопросы работодателя из модального окна вакансии: { question_id: answer }
+function collectModalAnswers() {
+    const answers = {};
+    document.querySelectorAll("#modal-questions-list textarea, #modal-questions-list input").forEach(inp => {
+        const qid = inp.getAttribute("data-qid") || inp.getAttribute("data-qtext");
+        if (qid) answers[qid] = inp.value.trim();
+    });
+    return answers;
+}
+
+// Обновляет ответы в локальной копии вакансии, чтобы при повторном открытии модалки не показывались старые
+function applyAnswersToJob(job, answers) {
+    if (!job.questions_data || !answers) return;
+    let questions;
+    try {
+        questions = typeof job.questions_data === "string" ? JSON.parse(job.questions_data) : job.questions_data;
+    } catch (e) {
+        return;
+    }
+    if (!Array.isArray(questions)) return;
+    questions.forEach((q, idx) => {
+        const key = [q.id, `q_${idx}`, q.question_text || q.text].find(k => k && k in answers);
+        if (key && answers[key] !== (q.answer || "")) {
+            q.answer = answers[key];
+            q.answered_by_user = true;
+            q.requires_user_input = !answers[key];
+        }
+    });
+    job.questions_data = questions;
+    const found = currentJobs.find(j => String(j.id) === String(job.id));
+    if (found && found !== job) found.questions_data = questions;
 }
 
 function updateProcessingStatus(pipeline) {
@@ -4033,7 +4159,7 @@ function updateProcessingStatus(pipeline) {
 
 // Утилита для защиты от XSS
 function escapeHtml(unsafe) {
-    if (!unsafe) return "";
+    if (unsafe === null || unsafe === undefined) return "";
     return String(unsafe)
          .replace(/&/g, "&amp;")
          .replace(/</g, "&lt;")
@@ -4056,6 +4182,7 @@ function showToast(message, type = "info") {
     let icon = "ℹ️";
     if (type === "success") icon = "✅";
     if (type === "error") icon = "❌";
+    if (type === "warning") icon = "⚠️";
     
     const cleanMsg = escapeHtml(message).replace(/&lt;br\s*\/?&gt;/gi, "\n");
     toast.innerHTML = `<span style="flex-shrink:0;">${icon}</span> <span style="line-height: 1.4; flex: 1;">${cleanMsg}</span>`;
@@ -4245,6 +4372,21 @@ async function openKeyManager() {
     const modal = document.getElementById("key-manager-modal");
     if (!modal) return;
     
+    // Ключи могли измениться в окне провайдера — берём актуальный пул с сервера перед редактированием
+    try {
+        const settingsRes = await fetch("/api/settings");
+        if (settingsRes.ok) {
+            const fresh = await settingsRes.json();
+            userSettings.gemini_api_keys = fresh.gemini_api_keys;
+            userSettings.mistral_api_keys = fresh.mistral_api_keys;
+            userSettings.openai_api_keys = fresh.openai_api_keys;
+            userSettings.openai_provider_preset = fresh.openai_provider_preset;
+            updateKeysPoolFromSettings(fresh.gemini_api_keys, fresh.mistral_api_keys, fresh.openai_api_keys);
+        }
+    } catch (e) {
+        console.error("Error refreshing keys before opening key manager:", e);
+    }
+
     switchKeyManagerTab(activeKeyManagerTab || "openai");
     modal.classList.remove("hide");
     
@@ -4301,11 +4443,10 @@ function renderKeysList() {
         card.className = "key-item-card";
         
         // Маскируем ключ (показываем первые 6 и последние 4 символа)
-        const maskedKey = key.length > 14 
-            ? `${key.substring(0, 6)}••••••••${key.substring(key.length - 4)}` 
-            : key;
+        const maskedKey = maskApiKey(key);
             
-        const keyInfo = keyStatusesMap[key] || { status: "ok" };
+        const keyInfo = keyStatusesMap[maskedKey] || { status: "ok" };
+        const keyHidden = isMaskedKey(key);
         let statusBadge = `<span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(52, 211, 153, 0.15); color: #34d399;">Активен</span>`;
         if (keyInfo.status === "error") {
             if (keyInfo.reason === "rate_limit_or_quota") {
@@ -4322,7 +4463,7 @@ function renderKeysList() {
                 ${statusBadge}
             </div>
             <div class="key-item-actions">
-                <button type="button" class="key-btn-icon" data-action="toggle-visibility" data-index="${index}" title="Показать/скрыть ключ">👁️</button>
+                ${keyHidden ? "" : `<button type="button" class="key-btn-icon" data-action="toggle-visibility" data-index="${index}" title="Показать/скрыть ключ">👁️</button>`}
                 <button type="button" class="key-btn-icon" data-action="edit" data-index="${index}" title="Редактировать ключ">✏️</button>
                 <button type="button" class="key-btn-icon key-btn-delete" data-action="delete" data-index="${index}" title="Удалить ключ">🗑️</button>
             </div>
@@ -4335,7 +4476,7 @@ function renderKeysList() {
         const textSpan = card.querySelector(`#key-text-${index}`);
         
         let isRevealed = false;
-        toggleBtn.addEventListener("click", () => {
+        if (toggleBtn) toggleBtn.addEventListener("click", () => {
             isRevealed = !isRevealed;
             if (isRevealed) {
                 textSpan.textContent = key;
@@ -4347,7 +4488,9 @@ function renderKeysList() {
         });
         
         editBtn.addEventListener("click", () => {
-            const newKey = prompt(`Изменить API-ключ #${index + 1}:`, key);
+            const newKey = keyHidden
+                ? prompt(`Сохранённый ключ скрыт (${maskedKey}). Вставьте новый ключ, чтобы заменить #${index + 1}:`, "")
+                : prompt(`Изменить API-ключ #${index + 1}:`, key);
             if (newKey !== null) {
                 const trimmed = newKey.trim();
                 if (trimmed) {
@@ -4948,36 +5091,79 @@ async function saveNewProfileAnswer() {
 // Быстрый ИИ-отклик по ссылке или ID
 // ----------------------------------------------------
 
-async function handleQuickApply(urlOrId) {
+// Вакансии, по которым сейчас идёт быстрый отклик (защита от двойного клика)
+const quickApplyInFlight = new Set();
+
+async function requestQuickApply(body) {
+    const response = await fetch("/api/quick-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    });
+    const data = await response.json().catch(() => ({ detail: `Ошибка сервера (${response.status})` }));
+    return { response, data };
+}
+
+async function handleQuickApply(urlOrId, options = {}) {
     if (!urlOrId) {
         showToast("Пожалуйста, вставьте ссылку на вакансию или её ID.", "error");
         return;
     }
+    const key = String(urlOrId).trim();
+    if (quickApplyInFlight.has(key)) return;
+
+    const isDryRun = !!userSettings.dry_run;
+    if (!isDryRun) {
+        const title = options.title ? `«${options.title}»` : "эту вакансию";
+        const confirmed = await showConfirm(
+            `Отправить настоящий отклик на ${title} на hh.ru?\n\nИИ проанализирует вакансию, ответит на вопросы работодателя и отправит отклик. Отменить отправку будет нельзя.`
+        );
+        if (!confirmed) return;
+    }
+
+    quickApplyInFlight.add(key);
 
     const btn = document.getElementById("quick-apply-btn");
     const btnText = document.getElementById("quick-apply-btn-text");
     const loader = document.getElementById("quick-apply-loader");
     const input = document.getElementById("quick-apply-url-input");
+    const cardBtn = options.cardButton || null;
+    const cardBtnText = cardBtn ? cardBtn.textContent : "";
 
     if (btn) {
         btn.setAttribute("disabled", "true");
         if (btnText) btnText.textContent = "Анализ и отклик...";
         if (loader) loader.classList.remove("hide");
     }
+    if (cardBtn) {
+        cardBtn.setAttribute("disabled", "true");
+        cardBtn.textContent = "⏳ Отклик...";
+    }
 
     showToast("⚡ Запущен анализ вакансии, подготовка письма и ответов на вопросы...", "info");
 
     try {
-        const response = await fetch("/api/quick-apply", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                url_or_id: urlOrId,
-                resume_id: userSettings.resume_id
-            })
-        });
+        const body = {
+            url_or_id: urlOrId,
+            resume_id: options.resumeId || userSettings.resume_id,
+            cover_letter: options.coverLetter || null,
+            force: false
+        };
+        let { response, data } = await requestQuickApply(body);
 
-        const data = await response.json();
+        if (response.ok && data.status === "not_eligible") {
+            const blocker = data.has_hard_blocker && data.blocker_reason ? `\nБлокирующий фактор: ${data.blocker_reason}` : "";
+            const forceConfirmed = await showConfirm(
+                `«${data.title}»: совпадение ${data.match_score}% при пороге ${data.threshold}%.${blocker}\n\nВсё равно отправить отклик?`
+            );
+            if (!forceConfirmed) {
+                showToast("Отклик не отправлен: вакансия не прошла порог и помечена как «Не подошёл».", "info");
+                await loadJobs(true);
+                return;
+            }
+            // Отправляем уже подготовленное письмо, чтобы не генерировать его заново
+            ({ response, data } = await requestQuickApply({ ...body, cover_letter: data.cover_letter || body.cover_letter, force: true }));
+        }
 
         if (!response.ok || data.status === "error") {
             showToast("Ошибка быстрого отклика: " + (data.message || data.detail || "не удалось обработать вакансию"), "error");
@@ -5001,7 +5187,10 @@ async function handleQuickApply(urlOrId) {
                 match_score: data.match_score,
                 reasoning: data.reasoning,
                 cover_letter: data.cover_letter,
-                questions_data: data.questions_data
+                questions_data: data.questions_data,
+                scores_data: data.scores_data,
+                applied_resume_id: data.applied_resume_id,
+                applied_resume_title: data.applied_resume_title
             };
             openModal(jobObj);
         } else if (data.status === "dry_run") {
@@ -5014,7 +5203,10 @@ async function handleQuickApply(urlOrId) {
                 match_score: data.match_score,
                 reasoning: data.reasoning,
                 cover_letter: data.cover_letter,
-                questions_data: data.questions_data
+                questions_data: data.questions_data,
+                scores_data: data.scores_data,
+                applied_resume_id: data.applied_resume_id,
+                applied_resume_title: data.applied_resume_title
             };
             openModal(jobObj);
         }
@@ -5022,14 +5214,31 @@ async function handleQuickApply(urlOrId) {
         console.error("Error in quick apply:", e);
         showToast("Сетевая ошибка при быстром отклике.", "error");
     } finally {
+        quickApplyInFlight.delete(key);
         if (btn) {
             btn.removeAttribute("disabled");
             if (btnText) btnText.textContent = "Откликнуться с ИИ";
             if (loader) loader.classList.add("hide");
         }
+        if (cardBtn && cardBtn.isConnected) {
+            cardBtn.removeAttribute("disabled");
+            cardBtn.textContent = cardBtnText;
+        }
     }
 }
 window.handleQuickApply = handleQuickApply;
+
+// Быстрый отклик из карточки списка: переиспользуем уже сохранённое (возможно, отредактированное) письмо
+function handleQuickApplyFromCard(jobId, cardButton) {
+    const job = currentJobs.find(j => String(j.id) === String(jobId));
+    return handleQuickApply(jobId, {
+        cardButton,
+        title: job ? job.title : null,
+        coverLetter: job && job.cover_letter ? job.cover_letter : null,
+        resumeId: job && job.applied_resume_id ? job.applied_resume_id : null
+    });
+}
+window.handleQuickApplyFromCard = handleQuickApplyFromCard;
 
 async function doGenerateCoverLetter(job, textarea, btn, btnText, btnIcon, hintElem) {
     if (btn) btn.setAttribute("disabled", "true");

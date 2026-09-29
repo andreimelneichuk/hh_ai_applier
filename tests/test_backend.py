@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import src.db.database as database
 from src.api.app import app
+from src.api.security import API_TOKEN, TOKEN_HEADER
 import src.pipeline.runner as main
 from src.clients.browser import HHBrowserClient
 from src.clients.llm import LLMAnalyzer, VacancyAnalysis
@@ -29,7 +30,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
             except Exception:
                 pass
         database.init_db()
-        cls.client = TestClient(app)
+        cls.client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN})
         
     @classmethod
     def tearDownClass(cls):
@@ -145,7 +146,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
         mock_hh_client.get_vacancy_questions.return_value = []
 
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh_client), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Senior Python Engineer"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Senior Python Engineer"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis):
             
             # Запускаем переоценку одной вакансии
@@ -189,9 +190,9 @@ class TestHHApplierComprehensive(unittest.TestCase):
         get_res = self.client.get("/api/settings")
         self.assertEqual(get_res.status_code, 200)
         data = get_res.json()
-        self.assertEqual(data["mistral_api_keys"], "mistral_key_abc")
+        self.assertEqual(data["mistral_api_keys"], database.mask_api_key("mistral_key_abc"))
         self.assertEqual(data["mistral_model"], "mistral-small-latest")
-        self.assertEqual(data["gemini_api_keys"], "gemini_key_1,gemini_key_2")
+        self.assertEqual(data["gemini_api_keys"], database.mask_keys_field("gemini_key_1,gemini_key_2"))
 
     def test_06_mistral_direct_and_fallback(self):
         """Тестирование прямого вызова Mistral и fallback при исчерпании Gemini."""
@@ -829,7 +830,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
         get_res = self.client.get("/api/settings")
         self.assertEqual(get_res.status_code, 200)
         settings_data = get_res.json()
-        self.assertEqual(settings_data["openai_api_keys"], "gsk_test_key_1,gsk_test_key_2")
+        self.assertEqual(settings_data["openai_api_keys"], database.mask_keys_field("gsk_test_key_1,gsk_test_key_2"))
 
         # 3. Проверяем /api/model-status
         status_res = self.client.get("/api/model-status")
@@ -1148,7 +1149,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
         res = self.client.post("/api/providers/openrouter", json={"api_keys": [test_key]})
         self.assertEqual(res.status_code, 200)
         prov = res.json()["provider"]
-        self.assertEqual(prov["api_keys"], [test_key])
+        self.assertEqual(prov["api_keys"], [database.mask_api_key(test_key)])
 
         # Проверяем запись в БД
         saved_cfg = database.get_provider_config("openrouter")
