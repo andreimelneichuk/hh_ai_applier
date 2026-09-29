@@ -36,6 +36,13 @@ def _resolve_provider_keys(provider_id: str, legacy_config_key: str, env_name: s
         raw = os.getenv(env_name, "") or config_fallback
     return ",".join(database._parse_keys_field(raw))
 
+def _mask_provider(cfg: dict) -> dict:
+    """Копия конфигурации провайдера без открытых ключей (для ответа API)."""
+    masked = dict(cfg)
+    if "api_keys" in masked:
+        masked["api_keys"] = [database.mask_api_key(k) for k in masked.get("api_keys") or []]
+    return masked
+
 @router.get("/api/settings")
 def get_settings():
     """Возвращает текущие настройки поиска из базы данных."""
@@ -98,11 +105,12 @@ def get_settings():
         "threshold": threshold,
         "resume_id": resume_id,
         "dry_run": dry_run,
-        "gemini_api_keys": gemini_api_keys,
+        # Ключи отдаются только маскированными; при сохранении маски сопоставляются с сохранёнными ключами
+        "gemini_api_keys": database.mask_keys_field(gemini_api_keys),
         "gemini_model": gemini_model,
-        "mistral_api_keys": mistral_api_keys,
+        "mistral_api_keys": database.mask_keys_field(mistral_api_keys),
         "mistral_model": mistral_model,
-        "openai_api_keys": openai_api_keys,
+        "openai_api_keys": database.mask_keys_field(openai_api_keys),
         "openai_provider_preset": openai_provider_preset,
         "openai_base_url": openai_base_url,
         "openai_model": openai_model,
@@ -126,9 +134,13 @@ def save_settings(settings: SearchSettings):
         except Exception:
             pass
     if settings.gemini_api_keys is not None:
-        database.set_config_value("gemini_api_keys", settings.gemini_api_keys)
+        gemini_keys = database.resolve_masked_keys(
+            settings.gemini_api_keys,
+            _resolve_provider_keys("gemini", "gemini_api_keys", "GEMINI_API_KEYS", Config.GEMINI_API_KEY)
+        )
+        database.set_config_value("gemini_api_keys", ",".join(gemini_keys))
         try:
-            database.save_provider_config("gemini", {"api_keys": database._parse_keys_field(settings.gemini_api_keys)})
+            database.save_provider_config("gemini", {"api_keys": gemini_keys})
         except Exception:
             pass
     if settings.mistral_model:
@@ -138,18 +150,26 @@ def save_settings(settings: SearchSettings):
         except Exception:
             pass
     if settings.mistral_api_keys is not None:
-        database.set_config_value("mistral_api_keys", settings.mistral_api_keys)
+        mistral_keys = database.resolve_masked_keys(
+            settings.mistral_api_keys,
+            _resolve_provider_keys("mistral", "mistral_api_keys", "MISTRAL_API_KEYS", Config.MISTRAL_API_KEY)
+        )
+        database.set_config_value("mistral_api_keys", ",".join(mistral_keys))
         try:
-            database.save_provider_config("mistral", {"api_keys": database._parse_keys_field(settings.mistral_api_keys)})
+            database.save_provider_config("mistral", {"api_keys": mistral_keys})
         except Exception:
             pass
     if settings.openai_provider_preset:
         database.set_config_value("openai_provider_preset", settings.openai_provider_preset)
     if settings.openai_api_keys is not None:
-        database.set_config_value("openai_api_keys", settings.openai_api_keys)
+        preset = settings.openai_provider_preset or database.get_config_value("openai_provider_preset") or "groq"
+        openai_keys = database.resolve_masked_keys(
+            settings.openai_api_keys,
+            _resolve_provider_keys(preset, "openai_api_keys", "OPENAI_API_KEYS", Config.OPENAI_API_KEY)
+        )
+        database.set_config_value("openai_api_keys", ",".join(openai_keys))
         try:
-            preset = settings.openai_provider_preset or database.get_config_value("openai_provider_preset") or "groq"
-            database.save_provider_config(preset, {"api_keys": database._parse_keys_field(settings.openai_api_keys)})
+            database.save_provider_config(preset, {"api_keys": openai_keys})
         except Exception:
             pass
     if settings.openai_base_url:
@@ -209,7 +229,7 @@ def get_system_settings():
         "openai_provider_preset": openai_provider_preset,
         "openai_base_url": openai_base_url,
         "openai_model": openai_model,
-        "openai_api_keys": openai_api_keys,
+        "openai_api_keys": database.mask_keys_field(openai_api_keys),
         "openai_presets": list(OPENAI_PROVIDER_PRESETS.values()),
         "providers": list(UNIFIED_PROVIDERS.values())
     }
@@ -237,7 +257,7 @@ def get_all_providers():
         item["status_color"] = status_info["color"]
         if item["id"] == "openrouter" and (not item.get("active_model") or item.get("active_model") in DEAD_OPENROUTER_MODELS):
             item["active_model"] = "openrouter/free"
-    return {"providers": providers_list}
+    return {"providers": [_mask_provider(item) for item in providers_list]}
 
 @router.get("/api/providers/{provider_id}")
 def get_provider_detail(provider_id: str):
@@ -277,7 +297,6 @@ def get_provider_detail(provider_id: str):
     cfg["keys_detail"] = [
         {
             "key": database.mask_api_key(k),
-            "raw_key": k,
             "status": key_statuses.get(k, {}).get("status", "unknown"),
             "reason": key_statuses.get(k, {}).get("reason", ""),
             "detail": key_statuses.get(k, {}).get("detail", ""),
@@ -286,8 +305,8 @@ def get_provider_detail(provider_id: str):
         for k in cfg.get("api_keys", [])
     ]
 
-    res = dict(cfg)
-    res["provider"] = dict(cfg)
+    res = _mask_provider(cfg)
+    res["provider"] = _mask_provider(cfg)
     res["models"] = models
     return res
 
@@ -297,7 +316,7 @@ def add_custom_provider(payload: CustomProviderCreatePayload):
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     created = database.create_custom_provider(data)
     LLMAnalyzer._initialized_keys = False
-    return {"status": "ok", "provider": created}
+    return {"status": "ok", "provider": _mask_provider(created)}
 
 @router.delete("/api/providers/custom/{provider_id}")
 def remove_custom_provider(provider_id: str):
@@ -329,6 +348,8 @@ def update_provider_settings(provider_id: str, payload: ProviderConfigPayload):
     """Обновляет настройки провайдера (ключи, модель, температуру, base_url, активность)."""
     data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
     old_cfg = database.get_provider_config(provider_id)
+    if "api_keys" in data:
+        data["api_keys"] = database.resolve_masked_keys(data["api_keys"], (old_cfg or {}).get("api_keys", []))
     try:
         updated = database.save_provider_config(provider_id, data)
     except ValueError as e:
@@ -344,7 +365,7 @@ def update_provider_settings(provider_id: str, payload: ProviderConfigPayload):
 
     # Сбрасываем кэш проверки LLM
     LLMAnalyzer._initialized_keys = False
-    return {"status": "ok", "provider": updated}
+    return {"status": "ok", "provider": _mask_provider(updated)}
 
 @router.post("/api/providers/{provider_id}/probe")
 def probe_provider_keys(provider_id: str, payload: Optional[ProviderProbePayload] = None):
@@ -354,6 +375,11 @@ def probe_provider_keys(provider_id: str, payload: Optional[ProviderProbePayload
         raise HTTPException(status_code=404, detail="Provider not found")
 
     target_key = payload.api_key.strip() if (payload and payload.api_key) else None
+    if target_key and database.MASK_CHAR in target_key:
+        resolved = database.resolve_masked_keys([target_key], cfg.get("api_keys", []))
+        if not resolved:
+            raise HTTPException(status_code=404, detail="Ключ не найден среди сохранённых")
+        target_key = resolved[0]
 
     protocol = cfg.get("protocol", "openai")
     active_model = cfg.get("active_model", "")
@@ -465,7 +491,6 @@ def probe_provider_keys(provider_id: str, payload: Optional[ProviderProbePayload
             "status_info": prov_status,
             "keys": [{
                 "key": database.mask_api_key(target_key),
-                "raw_key": target_key,
                 "status": st,
                 "reason": reas,
                 "detail": det,
@@ -496,7 +521,6 @@ def probe_provider_keys(provider_id: str, payload: Optional[ProviderProbePayload
         total_lat += lat
         key_statuses.append({
             "key": database.mask_api_key(k),
-            "raw_key": k,
             "status": st,
             "reason": reas,
             "detail": det,
@@ -576,7 +600,8 @@ def save_system_settings(payload: SystemSettingsPayload):
         if payload.openai_provider_preset:
             database.set_active_provider_model(payload.openai_provider_preset, payload.openai_model)
     if payload.openai_api_keys is not None:
-        database.set_config_value("openai_api_keys", payload.openai_api_keys)
+        existing = database.get_config_value("openai_api_keys") or ""
+        database.set_config_value("openai_api_keys", ",".join(database.resolve_masked_keys(payload.openai_api_keys, existing)))
         
     # Сбрасываем кэш проверки LLM чтобы перепроверить новые настройки/ключи
     LLMAnalyzer._initialized_keys = False
@@ -641,6 +666,8 @@ def get_model_status(probe: bool = False):
         all_keys.extend(res["mistral"]["keys"])
     if "openai" in res and "keys" in res["openai"]:
         all_keys.extend(res["openai"]["keys"])
+    for key_info in all_keys:
+        key_info["key"] = database.mask_api_key(key_info.get("key"))
     res["keys"] = all_keys
     return res
 

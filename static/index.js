@@ -59,6 +59,11 @@ const DEAD_OPENROUTER_MODELS = new Set([
 ]);
 
 // Универсальный парсер API ключей (очищает от кавычек, скобок, поддерживает JSON-массивы и списки через запятую)
+// Сохранённые ключи сервер отдаёт только в маскированном виде; открыть или скопировать их нельзя
+function isMaskedKey(key) {
+    return String(key || "").includes("•");
+}
+
 function parseKeysList(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) {
@@ -1928,10 +1933,11 @@ async function probeAllDetailKeys() {
                 errorCount++;
             }
 
-            const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === cleanKey);
+            const maskedProbeKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
+            const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === maskedProbeKey);
             const entry = {
-                key: cleanKey,
-                masked: cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey,
+                key: maskedProbeKey,
+                masked: maskedProbeKey,
                 status: status,
                 reason: result.reason || result.error || null,
                 detail: result.detail || result.error || null,
@@ -1983,7 +1989,8 @@ function renderProviderDetailKeys() {
 
         const cleanKey = String(key || "").trim().replace(/^["'\[]+|["'\]]+$/g, '');
         const maskedKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
-        const kd = (currentDetailKeysData || []).find(k => k.key === cleanKey) || {};
+        const kd = (currentDetailKeysData || []).find(k => k.key === maskedKey) || {};
+        const keyHidden = isMaskedKey(cleanKey);
         const kStatus = kd.status || "untested";
 
         let keyStatusBadge = '<span class="glass-badge" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; font-size: 10px;">⚪️ Не проверен</span>';
@@ -2011,9 +2018,9 @@ function renderProviderDetailKeys() {
                 ${detailMsgHtml}
             </div>
             <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
-                <button type="button" class="btn btn-secondary btn-xs pdm-key-reveal" title="Показать/скрыть" style="padding: 2px 6px; font-size: 11px;">👁️</button>
-                <button type="button" class="btn btn-secondary btn-xs pdm-key-copy" title="Скопировать ключ в буфер" style="padding: 2px 6px; font-size: 11px;">📋</button>
-                <button type="button" class="btn btn-secondary btn-xs pdm-key-edit" title="Редактировать ключ" style="padding: 2px 6px; font-size: 11px;">✏️</button>
+                ${keyHidden ? "" : `<button type="button" class="btn btn-secondary btn-xs pdm-key-reveal" title="Показать/скрыть" style="padding: 2px 6px; font-size: 11px;">👁️</button>
+                <button type="button" class="btn btn-secondary btn-xs pdm-key-copy" title="Скопировать ключ в буфер" style="padding: 2px 6px; font-size: 11px;">📋</button>`}
+                <button type="button" class="btn btn-secondary btn-xs pdm-key-edit" title="${keyHidden ? "Заменить ключ" : "Редактировать ключ"}" style="padding: 2px 6px; font-size: 11px;">✏️</button>
                 <button type="button" class="btn btn-secondary btn-xs pdm-key-probe" title="Проверить ключ через API" style="padding: 2px 8px; font-size: 10.5px; color: #34d399;">Проверить</button>
                 <button type="button" class="btn btn-secondary btn-xs pdm-key-delete" title="Удалить ключ" style="padding: 2px 6px; font-size: 11px; color: #f87171;">🗑️</button>
             </div>
@@ -2027,7 +2034,7 @@ function renderProviderDetailKeys() {
         const probeBtn = card.querySelector(".pdm-key-probe");
         const delBtn = card.querySelector(".pdm-key-delete");
 
-        revealBtn.addEventListener("click", () => {
+        if (revealBtn) revealBtn.addEventListener("click", () => {
             revealed = !revealed;
             if (revealed) {
                 textSpan.textContent = cleanKey;
@@ -2042,7 +2049,7 @@ function renderProviderDetailKeys() {
             }
         });
 
-        copyBtn.addEventListener("click", async () => {
+        if (copyBtn) copyBtn.addEventListener("click", async () => {
             try {
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     await navigator.clipboard.writeText(cleanKey);
@@ -2061,7 +2068,9 @@ function renderProviderDetailKeys() {
         });
 
         editBtn.addEventListener("click", async () => {
-            const updated = prompt(`Редактировать API-ключ #${idx + 1}:`, cleanKey);
+            const updated = keyHidden
+                ? prompt(`Сохранённый ключ скрыт (${maskedKey}). Вставьте новый ключ, чтобы заменить #${idx + 1}:`, "")
+                : prompt(`Редактировать API-ключ #${idx + 1}:`, cleanKey);
             if (updated !== null) {
                 const cleanedUpdated = String(updated).trim().replace(/^["'\[]+|["'\]]+$/g, '');
                 if (!cleanedUpdated) {
@@ -2099,10 +2108,11 @@ function renderProviderDetailKeys() {
                     showToast(`Ошибка ключа: ${result.error || result.detail || result.reason || 'Невалидный ключ'}`, "error");
                 }
 
-                const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === cleanKey);
+                const maskedProbeKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
+                const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === maskedProbeKey);
                 const entry = {
-                    key: cleanKey,
-                    masked: cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey,
+                    key: maskedProbeKey,
+                    masked: maskedProbeKey,
                     status: status,
                     reason: result.reason || result.error || null,
                     detail: result.detail || result.error || null,
@@ -2126,10 +2136,9 @@ function renderProviderDetailKeys() {
         });
 
         delBtn.addEventListener("click", async () => {
-            const removedKey = currentDetailKeys[idx];
             currentDetailKeys.splice(idx, 1);
             if (currentDetailKeysData) {
-                currentDetailKeysData = currentDetailKeysData.filter(kd => kd.key !== removedKey);
+                currentDetailKeysData = currentDetailKeysData.filter(kd => kd.key !== maskedKey);
             }
             renderProviderDetailKeys();
             await autoSaveProviderKeys();
@@ -4411,7 +4420,8 @@ function renderKeysList() {
             ? `${key.substring(0, 6)}••••••••${key.substring(key.length - 4)}` 
             : key;
             
-        const keyInfo = keyStatusesMap[key] || { status: "ok" };
+        const keyInfo = keyStatusesMap[maskedKey] || { status: "ok" };
+        const keyHidden = isMaskedKey(key);
         let statusBadge = `<span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(52, 211, 153, 0.15); color: #34d399;">Активен</span>`;
         if (keyInfo.status === "error") {
             if (keyInfo.reason === "rate_limit_or_quota") {
@@ -4428,7 +4438,7 @@ function renderKeysList() {
                 ${statusBadge}
             </div>
             <div class="key-item-actions">
-                <button type="button" class="key-btn-icon" data-action="toggle-visibility" data-index="${index}" title="Показать/скрыть ключ">👁️</button>
+                ${keyHidden ? "" : `<button type="button" class="key-btn-icon" data-action="toggle-visibility" data-index="${index}" title="Показать/скрыть ключ">👁️</button>`}
                 <button type="button" class="key-btn-icon" data-action="edit" data-index="${index}" title="Редактировать ключ">✏️</button>
                 <button type="button" class="key-btn-icon key-btn-delete" data-action="delete" data-index="${index}" title="Удалить ключ">🗑️</button>
             </div>
@@ -4441,7 +4451,7 @@ function renderKeysList() {
         const textSpan = card.querySelector(`#key-text-${index}`);
         
         let isRevealed = false;
-        toggleBtn.addEventListener("click", () => {
+        if (toggleBtn) toggleBtn.addEventListener("click", () => {
             isRevealed = !isRevealed;
             if (isRevealed) {
                 textSpan.textContent = key;
@@ -4453,7 +4463,9 @@ function renderKeysList() {
         });
         
         editBtn.addEventListener("click", () => {
-            const newKey = prompt(`Изменить API-ключ #${index + 1}:`, key);
+            const newKey = keyHidden
+                ? prompt(`Сохранённый ключ скрыт (${maskedKey}). Вставьте новый ключ, чтобы заменить #${index + 1}:`, "")
+                : prompt(`Изменить API-ключ #${index + 1}:`, key);
             if (newKey !== null) {
                 const trimmed = newKey.trim();
                 if (trimmed) {

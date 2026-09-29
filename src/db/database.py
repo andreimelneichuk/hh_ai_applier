@@ -179,8 +179,8 @@ def _clean_key(key: Any) -> str:
     s = s.strip("[]\"' \t\r\n")
     return s
 
-def _parse_keys_field(raw: Any) -> List[str]:
-    """Универсально парсит ключи из JSON-массива, строки через запятую/перенос или списка."""
+def _split_keys(raw: Any) -> List[str]:
+    """Разбивает поле ключей (JSON-массив, строка через запятую/перенос или список) без дедупликации."""
     if not raw:
         return []
     items = []
@@ -201,12 +201,14 @@ def _parse_keys_field(raw: Any) -> List[str]:
             items = trimmed.replace(",", "\n").splitlines()
     else:
         items = [raw]
+    return [c for c in (_clean_key(item) for item in items) if c and not c.lower().startswith("your_")]
 
+def _parse_keys_field(raw: Any) -> List[str]:
+    """Универсально парсит ключи из JSON-массива, строки через запятую/перенос или списка."""
     seen = set()
     result = []
-    for item in items:
-        cleaned = _clean_key(item)
-        if cleaned and cleaned not in seen and not cleaned.lower().startswith("your_"):
+    for cleaned in _split_keys(raw):
+        if cleaned not in seen:
             seen.add(cleaned)
             result.append(cleaned)
     return result
@@ -944,6 +946,31 @@ def mask_api_key(key: str) -> str:
     if len(k) <= 10:
         return k[:2] + "••••••••" + k[-2:] if len(k) >= 4 else "••••••••"
     return k[:6] + "••••••••" + k[-4:]
+
+MASK_CHAR = "•"
+
+def mask_keys_field(raw: Any) -> str:
+    """Маскирует список ключей (строка через запятую / JSON / список) для ответа API."""
+    return ",".join(mask_api_key(k) for k in _parse_keys_field(raw))
+
+def resolve_masked_keys(incoming: Any, existing: Any) -> List[str]:
+    """Возвращает маскированные ключи из UI к настоящим значениям.
+
+    API отдаёт ключи только в маскированном виде, а интерфейс присылает список обратно целиком.
+    Маска, совпадающая с сохранённым ключом, заменяется на него; новые ключи передаются как есть;
+    маска, которой нет среди сохранённых ключей, отбрасывается, чтобы не сохранить её вместо ключа.
+    """
+    by_mask: Dict[str, List[str]] = {}
+    for key in _parse_keys_field(existing):
+        by_mask.setdefault(mask_api_key(key), []).append(key)
+    resolved = []
+    for key in _split_keys(incoming):
+        if MASK_CHAR not in key:
+            resolved.append(key)
+        elif by_mask.get(key):
+            # Одинаковые маски у разных ключей разбираем по порядку, чтобы не потерять ни один
+            resolved.append(by_mask[key].pop(0))
+    return _parse_keys_field(resolved)
 
 def get_all_providers_config() -> List[Dict[str, Any]]:
     """Возвращает список всех провайдеров (системных и кастомных) с их настройками."""
