@@ -146,7 +146,7 @@ class TestHHApplierComprehensive(unittest.TestCase):
         mock_hh_client.get_vacancy_questions.return_value = []
 
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh_client), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Senior Python Engineer"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Senior Python Engineer"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis):
             
             # Запускаем переоценку одной вакансии

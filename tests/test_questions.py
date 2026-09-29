@@ -285,7 +285,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         )
 
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Senior Python Developer, 6 лет"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Senior Python Developer, 6 лет"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis), \
              patch.object(LLMAnalyzer, "answer_questions", return_value=mock_q_res):
             
@@ -338,7 +338,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         mock_hh.get_vacancy_questions.return_value = mock_questions
 
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Python Developer"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Python Developer"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=mock_analysis), \
              patch.object(LLMAnalyzer, "answer_questions", return_value=mock_q_res):
             
@@ -368,7 +368,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         database.set_config_value("match_threshold", "70")
         mock_hh, analysis = self._quick_apply_mocks(40)
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Resume"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=analysis):
             res = self.client.post("/api/quick-apply", json={"url_or_id": "55500011"})
             self.assertEqual(res.status_code, 200)
@@ -393,7 +393,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         mock_hh, analysis = self._quick_apply_mocks(90)
         mock_hh.apply_to_vacancy.return_value = (True, "ALREADY_APPLIED")
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Resume"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=analysis):
             res = self.client.post("/api/quick-apply", json={"url_or_id": "55500022"})
             self.assertEqual(res.json()["status"], "already_applied")
@@ -419,7 +419,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         mock_hh, analysis = self._quick_apply_mocks(90)
         mock_hh.get_my_resumes.return_value = []
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value=""):
+             patch("src.pipeline.runner.load_resume_text", return_value=""):
             res = self.client.post("/api/quick-apply", json={"url_or_id": "55500044"})
             self.assertEqual(res.status_code, 400)
             self.assertIn("Резюме не найдено", res.json()["detail"])
@@ -427,7 +427,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         # Вакансия недоступна на hh.ru — 404
         mock_hh.get_vacancy_details.return_value = None
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"):
+             patch("src.pipeline.runner.load_resume_text", return_value="Resume"):
             res = self.client.post("/api/quick-apply", json={"url_or_id": "55500044"})
             self.assertEqual(res.status_code, 404)
 
@@ -435,7 +435,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         mock_hh, analysis = self._quick_apply_mocks(90)
         mock_hh.apply_to_vacancy.return_value = (False, "Кнопка отклика не найдена")
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Resume"), \
              patch.object(LLMAnalyzer, "analyze_vacancy", return_value=analysis):
             res = self.client.post("/api/quick-apply", json={"url_or_id": "55500055"})
             self.assertEqual(res.status_code, 502)
@@ -450,7 +450,7 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
         mock_hh, _ = self._quick_apply_mocks(90)
         mock_hh.get_vacancy_details.return_value = None
         with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
-             patch("src.api.routes.vacancies.load_resume_text", return_value="Resume"):
+             patch("src.pipeline.runner.load_resume_text", return_value="Resume"):
             res = self.client.post("/api/reanalyze/55500066")
             self.assertEqual(res.status_code, 404)
         self.assertFalse(state.pipeline_status["is_running"])
@@ -464,6 +464,26 @@ class TestQuestionsAndAnswersSupport(unittest.TestCase):
                                     threshold=70, dry_run=False)
         self.assertEqual(decision.status, "failed")
         mock_hh.apply_to_vacancy.assert_not_called()
+
+    def test_14_bulk_reanalyze_reports_unavailable(self):
+        """Недоступные на hh.ru вакансии попадают в итоги массовой переоценки как пропущенные."""
+        import src.api.state as state
+        conn = __import__("sqlite3").connect(database.DB_PATH)
+        conn.execute("DELETE FROM processed_vacancies WHERE status = 'failed'")
+        conn.commit()
+        conn.close()
+        for vid in ("55500077", "55500088"):
+            database.save_vacancy(vacancy_id=vid, title="T", company="C", status="failed",
+                                  match_score=0, analysis_reason="err", cover_letter="")
+        mock_hh, _ = self._quick_apply_mocks(90)
+        mock_hh.get_vacancy_details.return_value = None
+        with patch("src.api.routes.vacancies.HHBrowserClient", return_value=mock_hh), \
+             patch("src.pipeline.runner.load_resume_text", return_value="Resume"):
+            res = self.client.post("/api/reanalyze-all-failed")
+            self.assertEqual(res.json()["status"], "started")
+        stats = state.pipeline_snapshot()["last_run_stats"]
+        self.assertEqual(stats["skipped"], 2)
+        self.assertFalse(state.pipeline_snapshot()["is_running"])
 
 if __name__ == "__main__":
     unittest.main()

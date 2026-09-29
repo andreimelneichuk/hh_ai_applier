@@ -197,6 +197,52 @@ def format_hh_resume_to_text(resume_data: Dict[str, Any]) -> str:
         
     return "\n".join(parts)
 
+def _resume_entry(resume_id: str, resume_data: Dict[str, Any], listed: Dict[str, Any] = None) -> Dict[str, Any]:
+    listed = listed or {}
+    return {
+        "id": resume_id,
+        "title": listed.get("title") or resume_data.get("title") or "Резюме",
+        "text": format_hh_resume_to_text(resume_data),
+        # Имя и пол нужны ИИ для подписи и согласования рода в сопроводительном письме
+        "first_name": resume_data.get("first_name") or listed.get("first_name"),
+        "last_name": resume_data.get("last_name") or listed.get("last_name"),
+        "gender": resume_data.get("gender") or listed.get("gender"),
+    }
+
+
+def load_candidate_resumes(hh_client: HHBrowserClient, target_resume_id: str = None) -> List[Dict[str, Any]]:
+    """Загружает резюме кандидата для анализа: все резюме профиля или одно выбранное, иначе локальный файл."""
+    candidate_resumes: List[Dict[str, Any]] = []
+    if not target_resume_id or target_resume_id.lower() in ("all", "__all__"):
+        logger.info("Режим 'Все резюме (Автовыбор ИИ)'. Загрузка всех резюме пользователя...")
+        for listed in hh_client.get_my_resumes():
+            r_id = listed.get("id")
+            if not r_id:
+                continue
+            r_data = hh_client.get_resume(r_id)
+            if r_data:
+                entry = _resume_entry(r_id, r_data, listed)
+                if entry["text"]:
+                    candidate_resumes.append(entry)
+    else:
+        logger.info(f"Загрузка выбранного резюме {target_resume_id} из браузера...")
+        r_data = hh_client.get_resume(target_resume_id)
+        if r_data:
+            candidate_resumes.append(_resume_entry(target_resume_id, r_data))
+        else:
+            logger.warning("Не удалось получить резюме по сети. Попытка загрузить из локального файла.")
+
+    if not candidate_resumes:
+        local_text = load_resume_text()
+        if local_text:
+            candidate_resumes.append({
+                "id": target_resume_id or "local",
+                "title": "Локальное резюме",
+                "text": local_text
+            })
+    return candidate_resumes
+
+
 def run_pipeline(queries: List[str] = None, area_id: str = None, 
                  threshold: int = None, resume_id: str = None, 
                  dry_run: bool = None, max_process: int = 10,
@@ -265,59 +311,11 @@ def run_pipeline(queries: List[str] = None, area_id: str = None,
             return {"status": "error", "reason": "not_logged_in", "message": "Сессия hh.ru не активна. Войдите заново через кнопку входа."}
             
         # 3. Загрузка резюме пользователя (поддержка режима 'Все резюме')
-        is_all_resumes = (not target_resume_id or target_resume_id.lower() in ("all", "__all__"))
-        candidate_resumes: List[Dict[str, Any]] = []
-
-        if is_all_resumes:
-            logger.info("Включен режим 'Все резюме (Автовыбор ИИ)'. Загрузка всех резюме пользователя...")
-            all_my_resumes = hh_client.get_my_resumes()
-            for r in all_my_resumes:
-                r_id = r.get("id")
-                if not r_id:
-                    continue
-                r_data = hh_client.get_resume(r_id)
-                r_text = format_hh_resume_to_text(r_data) if r_data else ""
-                if r_text:
-                    candidate_resumes.append({
-                        "id": r_id,
-                        "title": r.get("title") or (r_data.get("title") if r_data else "Резюме"),
-                        "text": r_text,
-                        "first_name": (r_data.get("first_name") if r_data else None) or r.get("first_name"),
-                        "last_name": (r_data.get("last_name") if r_data else None) or r.get("last_name"),
-                        "gender": (r_data.get("gender") if r_data else None) or r.get("gender"),
-                    })
-            if candidate_resumes:
-                logger.info(f"Успешно загружено {len(candidate_resumes)} резюме пользователя для сравнительного анализа.")
-        else:
-            logger.info(f"Загрузка выбранного резюме {target_resume_id} из браузера...")
-            resume_data = hh_client.get_resume(target_resume_id)
-            if resume_data:
-                r_text = format_hh_resume_to_text(resume_data)
-                candidate_resumes.append({
-                    "id": target_resume_id,
-                    "title": resume_data.get("title") or "Резюме",
-                    "text": r_text,
-                    "first_name": resume_data.get("first_name"),
-                    "last_name": resume_data.get("last_name"),
-                    "gender": resume_data.get("gender"),
-                })
-                logger.info(f"Резюме '{resume_data.get('title')}' успешно загружено.")
-            else:
-                logger.warning("Не удалось получить резюме по сети. Попытка загрузить из локального файла.")
-
-        if not candidate_resumes:
-            logger.info("Загрузка текста резюме из локального файла...")
-            local_text = load_resume_text()
-            if local_text:
-                candidate_resumes.append({
-                    "id": target_resume_id or "local",
-                    "title": "Локальное резюме",
-                    "text": local_text
-                })
+        candidate_resumes = load_candidate_resumes(hh_client, target_resume_id)
 
         if not candidate_resumes:
             logger.error("Текст резюме отсутствует. Запуск конвейера невозможен.")
-            return {"status": "error", "message": "Resume content is empty"}
+            return {"status": "error", "message": "Резюме не найдено: выберите резюме в настройках или проверьте вход в hh.ru."}
             
         logger.info(f"К анализу готово резюме: {len(candidate_resumes)} шт. ({', '.join(r['title'] for r in candidate_resumes)})")
         if target_dry_run:

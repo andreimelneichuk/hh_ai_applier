@@ -64,6 +64,23 @@ function isMaskedKey(key) {
     return String(key || "").includes("•");
 }
 
+// Статус ключа с сервера ("ok"/"error" + reason) → состояние бейджа в модалке провайдера
+const RATE_LIMIT_REASONS = ["rate_limit_or_quota", "rate_limited", "quota_exceeded"];
+function normalizeKeyStatus(status, reason) {
+    if (status === "rate_limited" || RATE_LIMIT_REASONS.includes(reason)) return "rate_limited";
+    if (status === "ok" || status === "valid") return "valid";
+    if (status === "error" || status === "invalid") return "error";
+    return "untested";
+}
+
+// Та же маска, что у сервера (database.mask_api_key): по ней сопоставляются статусы ключей
+function maskApiKey(key) {
+    const k = String(key || "").trim();
+    if (!k || isMaskedKey(k)) return k;
+    if (k.length <= 10) return k.length >= 4 ? `${k.slice(0, 2)}••••••••${k.slice(-2)}` : "••••••••";
+    return `${k.slice(0, 6)}••••••••${k.slice(-4)}`;
+}
+
 function parseKeysList(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) {
@@ -1921,19 +1938,16 @@ async function probeAllDetailKeys() {
             });
             const result = await res.json();
             
-            let status = "invalid";
-            if (result.success) {
-                status = "valid";
+            const status = result.success ? "valid" : normalizeKeyStatus("error", result.reason);
+            if (status === "valid") {
                 successCount++;
-            } else if (result.reason === "rate_limited" || result.status_code === 429) {
-                status = "rate_limited";
+            } else if (status === "rate_limited") {
                 rateLimitedCount++;
             } else {
-                status = "error";
                 errorCount++;
             }
 
-            const maskedProbeKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
+            const maskedProbeKey = maskApiKey(cleanKey);
             const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === maskedProbeKey);
             const entry = {
                 key: maskedProbeKey,
@@ -1988,10 +2002,10 @@ function renderProviderDetailKeys() {
         card.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; gap: 8px;";
 
         const cleanKey = String(key || "").trim().replace(/^["'\[]+|["'\]]+$/g, '');
-        const maskedKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
+        const maskedKey = maskApiKey(cleanKey);
         const kd = (currentDetailKeysData || []).find(k => k.key === maskedKey) || {};
         const keyHidden = isMaskedKey(cleanKey);
-        const kStatus = kd.status || "untested";
+        const kStatus = normalizeKeyStatus(kd.status, kd.reason);
 
         let keyStatusBadge = '<span class="glass-badge" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; font-size: 10px;">⚪️ Не проверен</span>';
         if (kStatus === "valid") {
@@ -2096,19 +2110,16 @@ function renderProviderDetailKeys() {
                 });
                 const result = await res.json();
                 
-                let status = "invalid";
-                if (result.success) {
-                    status = "valid";
+                const status = result.success ? "valid" : normalizeKeyStatus("error", result.reason);
+                if (status === "valid") {
                     showToast(`Ключ #${idx + 1} валиден! (${result.latency_ms || 0} ms)`, "success");
-                } else if (result.reason === "rate_limited" || result.status_code === 429) {
-                    status = "rate_limited";
+                } else if (status === "rate_limited") {
                     showToast(`Ключ #${idx + 1}: Лимит запросов исчерпан (429)`, "warning");
                 } else {
-                    status = "error";
                     showToast(`Ошибка ключа: ${result.error || result.detail || result.reason || 'Невалидный ключ'}`, "error");
                 }
 
-                const maskedProbeKey = cleanKey.length > 14 ? `${cleanKey.substring(0, 6)}••••••••${cleanKey.substring(cleanKey.length - 4)}` : cleanKey;
+                const maskedProbeKey = maskApiKey(cleanKey);
                 const existingIdx = currentDetailKeysData.findIndex(kd => kd.key === maskedProbeKey);
                 const entry = {
                     key: maskedProbeKey,
@@ -3354,18 +3365,25 @@ async function pollScanStatus() {
                 window.hasReportedCompletion = true;
                 if (statusData.pipeline.last_error) {
                     showToast(`Анализ завершен с ошибкой:\n${statusData.pipeline.last_error}`, "error");
-                } else if (statusData.pipeline.last_status === "stopped") {
-                    showToast("⏹ Анализ остановлен пользователем", "info");
                 } else if (statusData.pipeline.last_run_stats) {
                     const s = statusData.pipeline.last_run_stats;
-                    const msg = [
-                        `✅ Анализ завершен!`,
-                        `Обработано: ${s.processed}`,
-                        `Подошли: ${s.matched}`,
+                    const stoppedByUser = statusData.pipeline.last_status === "stopped";
+                    const limitNote = {
+                        limit_applications: "Достигнут лимит откликов",
+                        limit_processed: "Достигнут лимит оценённых вакансий"
+                    }[s.stopped_reason];
+                    const lines = [
+                        stoppedByUser ? "⏹ Анализ остановлен пользователем" : (limitNote ? `✅ Анализ завершен: ${limitNote.toLowerCase()}` : `✅ Анализ завершен!`),
+                        `Обработано: ${s.processed || 0}`,
+                        `Подошли: ${s.matched || 0}`,
                         `Откликов: ${s.applied || 0}`,
                         `Ошибок: ${s.failed || 0}`
-                    ].join("\n");
-                    showToast(msg, "success");
+                    ];
+                    if (s.skipped) lines.push(`Недоступны на hh.ru: ${s.skipped}`);
+                    const msg = lines.join("\n");
+                    showToast(msg, stoppedByUser ? "info" : "success");
+                } else if (statusData.pipeline.last_status === "stopped") {
+                    showToast("⏹ Анализ остановлен пользователем", "info");
                 }
             }
         }
@@ -3968,13 +3986,17 @@ function openModal(job) {
         };
     }
     
-    const defaultApplyText = "Откликнуться";
+    const defaultApplyText = "Откликнуться сейчас";
+    const isSent = job.status === "applied" || job.status === "already_applied";
+    document.querySelectorAll("#modal-questions-list .question-answer-input").forEach(inp => {
+        if (isSent) inp.setAttribute("readonly", "true");
+        else inp.removeAttribute("readonly");
+    });
     
     if (job.status === "applied" || job.status === "already_applied") {
         applyBtn.setAttribute("disabled", "true");
         applyBtn.textContent = job.status === "already_applied" ? "Откликнут ранее" : "Уже отправлено";
         textarea.setAttribute("readonly", "true");
-        ignoreBtn.classList.add("hide");
     } else if (job.status === "failed") {
         // Для ошибочных вакансий показываем кнопку переоценки
         reanalyzeBtn.classList.remove("hide");
@@ -4022,21 +4044,25 @@ function openModal(job) {
                 })
             });
             
+            const result = await response.json().catch(() => ({}));
             if (response.ok) {
                 modal.classList.add("hide");
-                showToast("Отклик успешно отправлен!", "success");
+                if (result.vacancy_status === "already_applied") {
+                    showToast("Вы уже откликались на эту вакансию ранее — статус обновлён.", "info");
+                } else {
+                    showToast("Отклик успешно отправлен!", "success");
+                }
                 await loadJobs();
             } else {
-                const err = await response.json();
-                showToast("Ошибка при отклике: " + (err.detail || "неизвестная ошибка."), "error");
+                showToast("Ошибка при отклике: " + (result.detail || result.message || "неизвестная ошибка."), "error");
                 applyBtn.removeAttribute("disabled");
-                applyBtn.textContent = "Откликнуться";
+                applyBtn.textContent = defaultApplyText;
             }
         } catch (e) {
             console.error("Error applying:", e);
             showToast("Сетевая ошибка при отклике.", "error");
             applyBtn.removeAttribute("disabled");
-            applyBtn.textContent = "Откликнуться";
+            applyBtn.textContent = defaultApplyText;
         }
     };
     
@@ -4133,7 +4159,7 @@ function updateProcessingStatus(pipeline) {
 
 // Утилита для защиты от XSS
 function escapeHtml(unsafe) {
-    if (!unsafe) return "";
+    if (unsafe === null || unsafe === undefined) return "";
     return String(unsafe)
          .replace(/&/g, "&amp;")
          .replace(/</g, "&lt;")
@@ -4156,6 +4182,7 @@ function showToast(message, type = "info") {
     let icon = "ℹ️";
     if (type === "success") icon = "✅";
     if (type === "error") icon = "❌";
+    if (type === "warning") icon = "⚠️";
     
     const cleanMsg = escapeHtml(message).replace(/&lt;br\s*\/?&gt;/gi, "\n");
     toast.innerHTML = `<span style="flex-shrink:0;">${icon}</span> <span style="line-height: 1.4; flex: 1;">${cleanMsg}</span>`;
@@ -4416,9 +4443,7 @@ function renderKeysList() {
         card.className = "key-item-card";
         
         // Маскируем ключ (показываем первые 6 и последние 4 символа)
-        const maskedKey = key.length > 14 
-            ? `${key.substring(0, 6)}••••••••${key.substring(key.length - 4)}` 
-            : key;
+        const maskedKey = maskApiKey(key);
             
         const keyInfo = keyStatusesMap[maskedKey] || { status: "ok" };
         const keyHidden = isMaskedKey(key);
@@ -5075,7 +5100,7 @@ async function requestQuickApply(body) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
     });
-    const data = await response.json();
+    const data = await response.json().catch(() => ({ detail: `Ошибка сервера (${response.status})` }));
     return { response, data };
 }
 
@@ -5163,6 +5188,7 @@ async function handleQuickApply(urlOrId, options = {}) {
                 reasoning: data.reasoning,
                 cover_letter: data.cover_letter,
                 questions_data: data.questions_data,
+                scores_data: data.scores_data,
                 applied_resume_id: data.applied_resume_id,
                 applied_resume_title: data.applied_resume_title
             };
@@ -5178,6 +5204,7 @@ async function handleQuickApply(urlOrId, options = {}) {
                 reasoning: data.reasoning,
                 cover_letter: data.cover_letter,
                 questions_data: data.questions_data,
+                scores_data: data.scores_data,
                 applied_resume_id: data.applied_resume_id,
                 applied_resume_title: data.applied_resume_title
             };

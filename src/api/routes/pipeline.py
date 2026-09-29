@@ -3,7 +3,6 @@ from typing import List
 from fastapi import APIRouter, BackgroundTasks
 from src.pipeline.runner import run_pipeline
 from src.api.routes.settings import get_settings
-from src.api.state import pipeline_status
 import src.api.state as state
 
 logger = logging.getLogger("PipelineRoutes")
@@ -12,12 +11,8 @@ router = APIRouter(tags=["Pipeline"])
 def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_id: str, dry_run: bool,
                       stop_condition: str = None, limit_applications: int = None, limit_processed: int = None):
     """Фоновая задача выполнения сканирования. is_running уже выставлен через try_claim_pipeline()."""
-    state.pipeline_status["last_error"] = None
-    state.pipeline_status["last_status"] = None
-    state.pipeline_status["currently_processing"] = None
-    
     def on_step(job_info):
-        state.pipeline_status["currently_processing"] = job_info
+        state.update_pipeline(currently_processing=job_info)
         
     try:
         res = run_pipeline(
@@ -30,12 +25,14 @@ def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_i
             limit_applications=limit_applications,
             limit_processed=limit_processed,
             on_step_change=on_step,
-            should_stop=lambda: state.pipeline_status.get("stop_requested", False)
+            should_stop=state.is_stop_requested
         )
-        state.pipeline_status["last_run_stats"] = res.get("stats")
-        state.pipeline_status["last_status"] = res.get("status")
+        state.update_pipeline(
+            last_run_stats=res.get("stats"),
+            last_status=res.get("status"),
+            last_error=(res.get("message") or res.get("error")) if res.get("status") == "error" else None
+        )
         if res.get("status") == "error":
-            state.pipeline_status["last_error"] = res.get("message") or res.get("error")
             if res.get("reason") == "not_logged_in":
                 # Сбрасываем кэш, чтобы UI не показывал "залогинен" при реально слетевшей сессии
                 state.cached_login_status = False
@@ -43,7 +40,7 @@ def run_pipeline_task(queries: List[str], area_id: str, threshold: int, resume_i
                 state.last_login_check_time = 0.0
     except Exception as e:
         logger.exception(f"Error in pipeline background task: {e}")
-        state.pipeline_status["last_error"] = str(e)
+        state.update_pipeline(last_error=str(e))
     finally:
         state.release_pipeline()
 
@@ -76,9 +73,7 @@ def trigger_search(background_tasks: BackgroundTasks):
 @router.post("/api/stop")
 def stop_search():
     """Запрашивает безопасную остановку текущего процесса анализа/сканирования."""
-    if not state.pipeline_status["is_running"]:
+    if not state.request_stop():
         return {"status": "ok", "message": "Сканирование не запущено"}
-        
-    state.pipeline_status["stop_requested"] = True
     logger.info("Получен запрос на остановку сканирования/анализа.")
     return {"status": "stopping", "message": "Запрос на остановку отправлен"}

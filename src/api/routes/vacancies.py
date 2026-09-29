@@ -5,13 +5,12 @@ from src.core.config import Config
 from src.db import database
 from src.clients.browser import HHBrowserClient, BrowserBusyError
 from src.clients.llm import LLMAnalyzer, QuotaExceededError
-from src.pipeline.runner import format_hh_resume_to_text, load_resume_text
+from src.pipeline.runner import load_candidate_resumes
 from src.pipeline.processing import decide_and_apply
 from src.api.state import (
     ApplyPayload,
     QuickApplyPayload,
     SaveDraftPayload,
-    pipeline_status,
     run_in_clean_thread,
     ensure_browser_available
 )
@@ -19,45 +18,6 @@ import src.api.state as state
 
 logger = logging.getLogger("VacanciesRoutes")
 router = APIRouter(tags=["Vacancies"])
-
-def load_candidate_resumes(hh_client: HHBrowserClient, target_resume_id: str = None) -> List[Dict[str, Any]]:
-    """Загружает список резюме кандидата (всех или конкретного) для анализа."""
-    is_all = (not target_resume_id or target_resume_id.lower() in ("all", "__all__"))
-    candidate_resumes = []
-    if is_all:
-        my_resumes = hh_client.get_my_resumes()
-        for r in my_resumes:
-            r_id = r.get("id")
-            if not r_id:
-                continue
-            r_data = hh_client.get_resume(r_id)
-            r_text = format_hh_resume_to_text(r_data) if r_data else ""
-            if r_text:
-                candidate_resumes.append({
-                    "id": r_id,
-                    "title": r.get("title") or r_data.get("title") or "Резюме",
-                    "text": r_text
-                })
-    else:
-        r_data = hh_client.get_resume(target_resume_id)
-        if r_data:
-            r_text = format_hh_resume_to_text(r_data)
-            candidate_resumes.append({
-                "id": target_resume_id,
-                "title": r_data.get("title") or "Резюме",
-                "text": r_text
-            })
-            
-    if not candidate_resumes:
-        local_text = load_resume_text()
-        if local_text:
-            candidate_resumes.append({
-                "id": target_resume_id or "local",
-                "title": "Локальное резюме",
-                "text": local_text
-            })
-            
-    return candidate_resumes
 
 def _target_resume_id(preferred: str = None) -> str:
     target = preferred or database.get_config_value("resume_id") or Config.HH_RESUME_ID
@@ -294,11 +254,11 @@ async def reanalyze_vacancy(vacancy_id: str):
     def run_reanalyze():
         hh_client = HHBrowserClient()
         try:
-            state.pipeline_status["currently_processing"] = {
+            state.update_pipeline(currently_processing={
                 "id": vacancy_id,
                 "title": row["title"] or "Переоценка...",
                 "company": row["company"] or ""
-            }
+            })
             candidate_resumes = _require_resumes(hh_client, _target_resume_id())
 
             vacancy_details = hh_client.get_vacancy_details(vacancy_id)
@@ -319,7 +279,7 @@ async def reanalyze_vacancy(vacancy_id: str):
             return {"status": "ok", "new_status": decision.status, "score": analysis.match_score, "resume": decision.resume_title}
         finally:
             hh_client.stop()
-            state.pipeline_status["currently_processing"] = None
+            state.update_pipeline(currently_processing=None)
 
     try:
         return await run_in_clean_thread(run_reanalyze)
@@ -400,16 +360,15 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
     """Повторный анализ всех вакансий с ошибками по очереди в фоне."""
     ensure_browser_available()
         
-    failed_rows = database.get_processed_paginated(status="failed", limit=100, offset=0)
+    # Берём снимок всех вакансий с ошибкой: повторно упавшие не попадут в этот же прогон второй раз
+    failed_count = database.get_processed_count("failed")
+    failed_rows = database.get_processed_paginated(status="failed", limit=max(failed_count, 1), offset=0)
     if not failed_rows:
         return {"status": "ok", "processed": 0, "message": "Нет вакансий со статусом Ошибка"}
     if not state.try_claim_pipeline():
         raise HTTPException(status_code=409, detail="Сканирование или переоценка уже запущены, подождите")
         
     def process_all_task(failed_rows):
-        state.pipeline_status["last_status"] = None
-        state.pipeline_status["last_error"] = None
-        state.pipeline_status["last_run_stats"] = None
         hh_client = HHBrowserClient()
         
         stats = {
@@ -417,7 +376,8 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
             "matched": 0,
             "applied": 0,
             "ignored": 0,
-            "failed": 0
+            "failed": 0,
+            "skipped": 0
         }
         stopped_by_user = False
         
@@ -426,30 +386,33 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
             candidate_resumes = load_candidate_resumes(hh_client, _target_resume_id())
             if not candidate_resumes:
                 logger.error("Резюме не найдено при переоценке.")
-                state.pipeline_status["last_error"] = "Резюме не найдено при переоценке"
+                state.update_pipeline(last_error="Резюме не найдено при переоценке")
                 return
                 
             analyzer = LLMAnalyzer()
             user_saved_answers = database.get_user_profile_answers()
             
             for row in failed_rows:
-                if state.pipeline_status.get("stop_requested"):
+                if state.is_stop_requested():
                     logger.info("Переоценка ошибок остановлена по запросу пользователя.")
                     stopped_by_user = True
                     break
                 vacancy_id = row[0]
                 try:
-                    state.pipeline_status["currently_processing"] = {
+                    state.update_pipeline(currently_processing={
                         "id": vacancy_id,
-                        "title": row[1] if len(row) > 1 else "Переоценка...",
-                        "company": row[2] if len(row) > 2 else ""
-                    }
+                        "title": row[1] or "Переоценка...",
+                        "company": row[2] or ""
+                    })
                     
                     vacancy_details = hh_client.get_vacancy_details(vacancy_id)
                     if not vacancy_details or not vacancy_details.get("description"):
+                        # Вакансия удалена или в архиве — оставляем статус ошибки, но показываем в итогах
+                        logger.warning(f"Вакансия {vacancy_id} недоступна на hh.ru, пропускаем.")
+                        stats["skipped"] += 1
                         continue
                     
-                    if state.pipeline_status.get("stop_requested"):
+                    if state.is_stop_requested():
                         logger.info("Переоценка ошибок остановлена перед анализом LLM.")
                         stopped_by_user = True
                         break
@@ -465,7 +428,7 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                         threshold=threshold,
                         dry_run=_is_dry_run(),
                         user_saved_answers=user_saved_answers,
-                        should_stop=lambda: state.pipeline_status.get("stop_requested")
+                        should_stop=state.is_stop_requested
                     )
                     if decision.stopped:
                         logger.info("Переоценка ошибок остановлена перед откликом.")
@@ -484,18 +447,17 @@ def reanalyze_all_failed(background_tasks: BackgroundTasks):
                         stats["failed"] += 1
                 except QuotaExceededError as qe:
                     logger.error(f"Превышена квота запросов к Gemini API (429) при переоценке: {qe}")
-                    state.pipeline_status["last_error"] = "Превышена квота запросов к Gemini API (429 Quota Exceeded). Переоценка остановлена."
+                    state.update_pipeline(last_error="Превышена квота запросов к ИИ (429 Quota Exceeded). Переоценка остановлена.")
                     stats["failed"] += 1
                     break
                 except Exception as e:
                     stats["failed"] += 1
                     logger.error(f"Не удалось переоценить вакансию {vacancy_id}: {e}")
                     
-            state.pipeline_status["last_run_stats"] = stats
-            state.pipeline_status["last_status"] = "stopped" if stopped_by_user else "success"
+            state.update_pipeline(last_run_stats=stats, last_status="stopped" if stopped_by_user else "success")
         except Exception as outer_e:
             logger.error(f"Глобальная ошибка в фоновой переоценке: {outer_e}")
-            state.pipeline_status["last_error"] = str(outer_e)
+            state.update_pipeline(last_error=str(outer_e))
         finally:
             hh_client.stop()
             state.release_pipeline()

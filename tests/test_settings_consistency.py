@@ -144,6 +144,46 @@ class TestPipelineClaim(unittest.TestCase):
             self.assertEqual(res.json()["status"], "error")
             task.assert_not_called()
 
+    def test_stop_when_idle_does_not_leave_flag(self):
+        """«Стоп» без запущенной задачи не должен остановить следующий запуск."""
+        res = self.client.post("/api/stop")
+        self.assertEqual(res.json()["status"], "ok")
+        self.assertFalse(state.is_stop_requested())
+
+    def test_claim_resets_previous_results(self):
+        state.update_pipeline(last_error="old", last_status="success", last_run_stats={"processed": 5})
+        self.assertTrue(state.try_claim_pipeline())
+        snap = state.pipeline_snapshot()
+        self.assertIsNone(snap["last_error"])
+        self.assertIsNone(snap["last_run_stats"])
+        # Снимок — копия: изменения состояния после чтения на него не влияют
+        state.update_pipeline(currently_processing={"id": "1"})
+        self.assertIsNone(snap["currently_processing"])
+
+
+class TestErrorsAreJson(unittest.TestCase):
+    def test_unhandled_error_returns_json_detail(self):
+        client = TestClient(app, base_url="http://127.0.0.1", headers={TOKEN_HEADER: API_TOKEN},
+                            raise_server_exceptions=False)
+        with patch("src.api.routes.vacancies.database.get_processed_paginated", side_effect=RuntimeError("db is broken")):
+            res = client.get("/api/jobs")
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(res.json()["detail"], "db is broken")
+
+
+class TestResumeLoading(unittest.TestCase):
+    def test_resumes_carry_name_and_gender(self):
+        """Имя и пол из резюме доходят до ИИ во всех сценариях (раньше — только в сканировании)."""
+        from unittest.mock import MagicMock
+        from src.pipeline.runner import load_candidate_resumes
+        hh = MagicMock()
+        hh.get_my_resumes.return_value = [{"id": "r1", "title": "Python Dev"}]
+        hh.get_resume.return_value = {"title": "Python Dev", "first_name": "Андрей", "last_name": "М", "gender": "Мужской",
+                                      "experience": [], "skill_set": []}
+        resumes = load_candidate_resumes(hh, "all")
+        self.assertEqual(resumes[0]["first_name"], "Андрей")
+        self.assertEqual(resumes[0]["gender"], "Мужской")
+
 
 if __name__ == "__main__":
     unittest.main()

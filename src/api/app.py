@@ -36,6 +36,14 @@ def create_app() -> FastAPI:
     async def browser_busy_handler(request, exc: BrowserBusyError):
         return JSONResponse(status_code=409, content={"detail": str(exc), "message": str(exc)})
 
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request, exc: Exception):
+        # Без этого необработанная ошибка уходит текстом "Internal Server Error", фронт не может
+        # разобрать JSON и показывает «Сетевая ошибка» вместо настоящей причины
+        logging.getLogger("API").exception(f"Необработанная ошибка {request.method} {request.url.path}: {exc}")
+        message = str(exc) or exc.__class__.__name__
+        return JSONResponse(status_code=500, content={"detail": message, "message": message})
+
     # Подключение роутеров
     app.include_router(auth_router)
     app.include_router(settings_router)

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import queue
 import threading
 from typing import List, Dict, Any, Optional
@@ -15,24 +16,50 @@ pipeline_status = {
     "currently_processing": None
 }
 
-# Защищает проверку-и-установку is_running от гонки двух одновременных запросов
-_pipeline_claim_lock = threading.Lock()
+# Состояние меняют фоновые потоки (сканирование, переоценка) и обработчики запросов одновременно,
+# поэтому все изменения и чтения для ответа API идут через эти функции под одной блокировкой
+_pipeline_lock = threading.RLock()
 
 def try_claim_pipeline() -> bool:
     """Атомарно помечает фоновую задачу как запущенную. False — если уже что-то выполняется."""
-    with _pipeline_claim_lock:
+    with _pipeline_lock:
         if pipeline_status["is_running"]:
             return False
-        pipeline_status["is_running"] = True
-        pipeline_status["stop_requested"] = False
+        pipeline_status.update(
+            is_running=True,
+            stop_requested=False,
+            currently_processing=None,
+            # Итоги прошлого запуска сбрасываем сразу, чтобы UI не принял их за результат нового
+            last_run_stats=None,
+            last_error=None,
+            last_status=None
+        )
         return True
 
 def release_pipeline():
     """Снимает отметку о выполнении фоновой задачи."""
-    with _pipeline_claim_lock:
-        pipeline_status["is_running"] = False
-        pipeline_status["stop_requested"] = False
-        pipeline_status["currently_processing"] = None
+    with _pipeline_lock:
+        pipeline_status.update(is_running=False, stop_requested=False, currently_processing=None)
+
+def update_pipeline(**fields):
+    with _pipeline_lock:
+        pipeline_status.update(fields)
+
+def request_stop() -> bool:
+    """Просит остановить текущую задачу. False — если ничего не выполняется (флаг не остаётся висеть)."""
+    with _pipeline_lock:
+        if not pipeline_status["is_running"]:
+            return False
+        pipeline_status["stop_requested"] = True
+        return True
+
+def is_stop_requested() -> bool:
+    return bool(pipeline_status.get("stop_requested"))
+
+def pipeline_snapshot() -> Dict[str, Any]:
+    """Согласованная копия состояния для ответа API."""
+    with _pipeline_lock:
+        return copy.deepcopy(pipeline_status)
 
 # Флаг открытия браузера для входа
 login_browser_active = False

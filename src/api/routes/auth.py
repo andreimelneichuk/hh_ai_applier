@@ -78,12 +78,12 @@ def get_status():
             "authorized": False,
             "login_active": state.login_browser_active,
             "user": None,
-            "pipeline": state.pipeline_status
+            "pipeline": state.pipeline_snapshot()
         }
         
     return {
         "authorized": True,
         "login_active": state.login_browser_active,
         "user": state.cached_user_info,
-        "pipeline": state.pipeline_status
+        "pipeline": state.pipeline_snapshot()
     }
