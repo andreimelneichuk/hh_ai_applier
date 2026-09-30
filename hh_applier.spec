@@ -143,8 +143,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleName': 'HH AI Applier',
             'CFBundleDisplayName': 'HH.ru AI Job Applier',
-            'CFBundleVersion': '1.0.3',
-            'CFBundleShortVersionString': '1.0.3',
+            'CFBundleVersion': '1.0.4',
+            'CFBundleShortVersionString': '1.0.4',
             'NSHighResolutionCapable': 'True',
             'NSRequiresAquaSystemAppearance': 'False',
         }
