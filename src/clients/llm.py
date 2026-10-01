@@ -495,11 +495,16 @@ class LLMAnalyzer:
         preset_info = OPENAI_PROVIDER_PRESETS.get(self.openai_provider_preset, {})
         default_base_url = preset_info.get("base_url", "https://api.groq.com/openai/v1")
 
+        oa_cfg = None
         if openai_api_keys:
             self.openai_keys = database._parse_keys_field(openai_api_keys)
         else:
             oa_cfg = database.get_provider_config(self.openai_provider_preset)
-            if oa_cfg is not None:
+            if oa_cfg is not None and oa_cfg.get("protocol", "openai") != "openai":
+                # Основной провайдер — нативный (Gemini/Mistral): его ключи уже в своём слоте,
+                # в OpenAI-совместимый слот их не дублируем (иначе они уходят на base_url Groq)
+                self.openai_keys = []
+            elif oa_cfg is not None:
                 self.openai_keys = oa_cfg.get("api_keys", [])
             else:
                 db_openai = database.get_config_value("openai_api_keys")
