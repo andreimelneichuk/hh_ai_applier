@@ -134,6 +134,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 let settingsLoaded = false;
+let settingsLoading = null; // промис идущей загрузки настроек, чтобы не запускать её параллельно
 
 async function initApp() {
     setupEventListeners();
@@ -160,9 +161,13 @@ async function initApp() {
         setStatsLoading(true);
     }
     
-    await loadSettings();
-    await loadJobs(!hasCache); // если кэша нет, сбрасываем, иначе тихо обновляем
-    await checkStatus();
+    // Вакансии и статус не ждут настроек: loadSettings тянет модели у провайдеров и резюме
+    // через браузер, это может занимать десятки секунд
+    await Promise.all([
+        loadSettings(),
+        loadJobs(!hasCache), // если кэша нет, сбрасываем, иначе тихо обновляем
+        checkStatus(),
+    ]);
     
     // Периодическая проверка статуса и фоновое обновление счетчиков
     statusInterval = setInterval(async () => {
@@ -945,7 +950,7 @@ async function checkStatus() {
             modelData = await modelResponse.json();
         }
         
-        if (!settingsLoaded) {
+        if (!settingsLoaded && !settingsLoading) {
             await loadSettings();
         }
         
@@ -1079,7 +1084,14 @@ async function checkStatus() {
 }
 
 // Загрузка настроек поиска
-async function loadSettings() {
+function loadSettings() {
+    if (!settingsLoading) {
+        settingsLoading = loadSettingsImpl().finally(() => { settingsLoading = null; });
+    }
+    return settingsLoading;
+}
+
+async function loadSettingsImpl() {
     try {
         const response = await fetch("/api/settings");
         userSettings = await response.json();
